@@ -14,7 +14,7 @@
             <h1>TaskBoard</h1>
             <p>局域网任务协作</p>
           </div>
-          <button class="icon-button primary" id="openProjectCreateButton" type="button" title="新建项目">+</button>
+          <button class="icon-button primary" id="openProjectCreateButton" type="button" title="新建项目" aria-label="新建项目">+</button>
         </div>
 
         <button class="address-trigger" id="addressButton" type="button">访问地址</button>
@@ -40,7 +40,7 @@
           <div class="topbar-actions">
             <button class="primary-action" id="openTaskCreateButton" type="button">新建任务</button>
             <div class="menu-wrap">
-              <button class="icon-button" id="projectMenuButton" type="button" title="项目操作">...</button>
+              <button class="icon-button" id="projectMenuButton" type="button" title="项目操作" aria-label="项目操作">⋯</button>
               <div class="menu hidden" id="projectMenu">
                 <button id="openProjectRenameButton" type="button">修改项目名</button>
                 <button id="archiveProjectButton" type="button">归档项目</button>
@@ -87,7 +87,7 @@
       <div class="modal-panel">
         <div class="modal-head">
           <h2 id="identityModalTitle">编辑身份</h2>
-          <button class="icon-button" type="button" data-close-modal title="关闭">x</button>
+          <button class="icon-button" type="button" data-close-modal title="关闭" aria-label="关闭">×</button>
         </div>
         <div class="identity-editor">
           <label>
@@ -110,7 +110,7 @@
       <div class="modal-panel">
         <div class="modal-head">
           <h2 id="addressModalTitle">访问地址</h2>
-          <button class="icon-button" type="button" data-close-modal title="关闭">x</button>
+          <button class="icon-button" type="button" data-close-modal title="关闭" aria-label="关闭">×</button>
         </div>
         <div class="address-list" id="addressList">
           <span>读取中</span>
@@ -122,7 +122,7 @@
       <form class="modal-panel" id="projectForm">
         <div class="modal-head">
           <h2 id="projectCreateTitle">新建项目</h2>
-          <button class="icon-button" type="button" data-close-modal title="关闭">x</button>
+          <button class="icon-button" type="button" data-close-modal title="关闭" aria-label="关闭">×</button>
         </div>
         <label>
           项目名称
@@ -139,7 +139,7 @@
       <form class="modal-panel" id="renameProjectForm">
         <div class="modal-head">
           <h2 id="projectRenameTitle">修改项目名</h2>
-          <button class="icon-button" type="button" data-close-modal title="关闭">x</button>
+          <button class="icon-button" type="button" data-close-modal title="关闭" aria-label="关闭">×</button>
         </div>
         <label>
           项目名称
@@ -156,7 +156,7 @@
       <form class="modal-panel wide" id="taskForm">
         <div class="modal-head">
           <h2 id="taskModalTitle">新建任务</h2>
-          <button class="icon-button" type="button" data-close-modal title="关闭">x</button>
+          <button class="icon-button" type="button" data-close-modal title="关闭" aria-label="关闭">×</button>
         </div>
         <label>
           任务描述
