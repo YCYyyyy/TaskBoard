@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TaskBoard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-row">
+          <div>
+            <h1>TaskBoard</h1>
+            <p>局域网任务协作</p>
+          </div>
+          <button class="icon-button primary" id="openProjectCreateButton" type="button" title="新建项目">+</button>
+        </div>
+
+        <button class="address-trigger" id="addressButton" type="button">访问地址</button>
+
+        <div class="project-section">
+          <div class="section-label">项目</div>
+          <div class="project-list" id="activeProjects"></div>
+        </div>
+
+        <details class="archive-box" id="archiveBox">
+          <summary>归档项目 <span id="archiveCount">0</span></summary>
+          <div class="project-list archived" id="archivedProjects"></div>
+        </details>
+      </aside>
+
+      <main class="board">
+        <header class="topbar">
+          <div class="project-title">
+            <span id="projectStateLabel">当前项目</span>
+            <h2 id="selectedProjectName">未选择项目</h2>
+          </div>
+
+          <div class="topbar-actions">
+            <button class="primary-action" id="openTaskCreateButton" type="button">新建任务</button>
+            <div class="menu-wrap">
+              <button class="icon-button" id="projectMenuButton" type="button" title="项目操作">...</button>
+              <div class="menu hidden" id="projectMenu">
+                <button id="openProjectRenameButton" type="button">修改项目名</button>
+                <button id="archiveProjectButton" type="button">归档项目</button>
+                <button id="restoreProjectButton" type="button">恢复项目</button>
+                <button id="deleteProjectButton" class="danger" type="button">永久删除</button>
+              </div>
+            </div>
+            <button class="identity-button" id="identityButton" type="button" title="编辑身份">
+              <span class="avatar-preview" id="avatarPreview"><span id="avatarPreviewIcon">◆</span></span>
+              <span id="identityDisplayName">匿名用户</span>
+            </button>
+          </div>
+        </header>
+
+        <section class="board-columns" id="boardView">
+          <div class="column">
+            <div class="column-heading">
+              <h3>待接取</h3>
+              <span id="openCount">0</span>
+            </div>
+            <div class="task-list" id="openTasks"></div>
+          </div>
+          <div class="column">
+            <div class="column-heading">
+              <h3>已接取</h3>
+              <span id="claimedCount">0</span>
+            </div>
+            <div class="task-list" id="claimedTasks"></div>
+          </div>
+          <div class="column">
+            <div class="column-heading">
+              <h3>已完成</h3>
+              <span id="doneCount">0</span>
+            </div>
+            <div class="task-list" id="doneTasks"></div>
+          </div>
+        </section>
+
+        <div class="empty-state hidden" id="emptyState">先创建或选择一个项目</div>
+      </main>
+    </div>
+
+    <div class="modal hidden" id="identityModal" role="dialog" aria-modal="true" aria-labelledby="identityModalTitle">
+      <div class="modal-panel">
+        <div class="modal-head">
+          <h2 id="identityModalTitle">编辑身份</h2>
+          <button class="icon-button" type="button" data-close-modal title="关闭">x</button>
+        </div>
+        <div class="identity-editor">
+          <label>
+            姓名
+            <input id="identityName" type="text" maxlength="24" placeholder="你的姓名" />
+          </label>
+          <div>
+            <div class="field-label">头像图标</div>
+            <div class="icon-grid" id="identityIcons"></div>
+          </div>
+          <div>
+            <div class="field-label">头像颜色</div>
+            <div class="color-row" id="identityColors"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="addressModal" role="dialog" aria-modal="true" aria-labelledby="addressModalTitle">
+      <div class="modal-panel">
+        <div class="modal-head">
+          <h2 id="addressModalTitle">访问地址</h2>
+          <button class="icon-button" type="button" data-close-modal title="关闭">x</button>
+        </div>
+        <div class="address-list" id="addressList">
+          <span>读取中</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal hidden" id="projectCreateModal" role="dialog" aria-modal="true" aria-labelledby="projectCreateTitle">
+      <form class="modal-panel" id="projectForm">
+        <div class="modal-head">
+          <h2 id="projectCreateTitle">新建项目</h2>
+          <button class="icon-button" type="button" data-close-modal title="关闭">x</button>
+        </div>
+        <label>
+          项目名称
+          <input id="projectNameInput" type="text" maxlength="60" placeholder="输入项目名称" />
+        </label>
+        <div class="modal-actions">
+          <button class="secondary-action" type="button" data-close-modal>取消</button>
+          <button class="primary-action" type="submit">创建</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="modal hidden" id="projectRenameModal" role="dialog" aria-modal="true" aria-labelledby="projectRenameTitle">
+      <form class="modal-panel" id="renameProjectForm">
+        <div class="modal-head">
+          <h2 id="projectRenameTitle">修改项目名</h2>
+          <button class="icon-button" type="button" data-close-modal title="关闭">x</button>
+        </div>
+        <label>
+          项目名称
+          <input id="renameProjectInput" type="text" maxlength="60" placeholder="项目名称" />
+        </label>
+        <div class="modal-actions">
+          <button class="secondary-action" type="button" data-close-modal>取消</button>
+          <button class="primary-action" type="submit">保存</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="modal hidden" id="taskModal" role="dialog" aria-modal="true" aria-labelledby="taskModalTitle">
+      <form class="modal-panel wide" id="taskForm">
+        <div class="modal-head">
+          <h2 id="taskModalTitle">新建任务</h2>
+          <button class="icon-button" type="button" data-close-modal title="关闭">x</button>
+        </div>
+        <label>
+          任务描述
+          <textarea id="taskDescriptionInput" rows="6" maxlength="600" placeholder="写下任务描述"></textarea>
+        </label>
+        <div>
+          <div class="field-label">任务底色</div>
+          <div class="task-color-grid" id="taskBackgroundColors"></div>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary-action" type="button" data-close-modal>取消</button>
+          <button class="primary-action" type="submit" id="taskSubmitButton">新建</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="toast" id="toast" role="status"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

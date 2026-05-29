@@ -1,0 +1,18 @@
+{
+  "name": "lan-task-board",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A lightweight LAN task board for browser-based collaboration.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "check": "node --check server.js && node --check public/app.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "ws": "^8.18.3"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
