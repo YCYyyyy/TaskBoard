@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const http = require('http');
 const os = require('os');
 const path = require('path');
-const { mkdirSync } = require('fs');
+const { mkdirSync, statSync } = require('fs');
 const sea = require('node:sea');
 const { DatabaseSync } = require('node:sqlite');
 const { WebSocket, WebSocketServer } = require('ws');
@@ -16,6 +16,8 @@ const MAX_PORT_ATTEMPTS = normalizeRetryLimit(process.env.PORT_RETRY_LIMIT, 50);
 const HOST = process.env.HOST || '0.0.0.0';
 const MAX_SIGNAL_BYTES = 64 * 1024;
 const TRANSFER_TTL_MS = 6 * 60 * 60 * 1000;
+const EXE_FILE_NAME = 'TaskBoard.exe';
+const EXE_DOWNLOAD_URL = '/api/download/taskboard.exe';
 const IS_SEA = sea.isSea();
 const APP_ROOT = IS_SEA ? path.dirname(process.execPath) : __dirname;
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(APP_ROOT, 'data');
@@ -220,6 +222,20 @@ function getContentType(assetKey) {
   return MIME_TYPES.get(path.extname(assetKey).toLowerCase()) || 'application/octet-stream';
 }
 
+function getDownloadExePath() {
+  const candidates = IS_SEA ? [process.execPath] : [path.join(__dirname, 'dist', EXE_FILE_NAME)];
+
+  for (const filePath of candidates) {
+    try {
+      if (statSync(filePath).isFile()) {
+        return filePath;
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
 function ensureTaskColumn(column, definition) {
   const exists = db.prepare('PRAGMA table_info(tasks)').all().some((field) => field.name === column);
   if (!exists) {
@@ -309,7 +325,7 @@ function normalizeAssignee(body, options = {}) {
   const icon = trimText(body.assigneeIcon);
   const color = trimText(body.assigneeColor);
 
-  if ((options.requireId && !id) || id.length > 120 || !name || !icon || !AVATAR_COLORS.has(color)) {
+  if ((options.requireId && !id) || id.length > 120 || !name || name.length > 120 || !icon || !AVATAR_COLORS.has(color)) {
     return null;
   }
 
@@ -335,7 +351,7 @@ function normalizePresenceIdentity(value) {
   const icon = trimText(value.icon);
   const color = trimText(value.color);
 
-  if (!id || id.length > 120 || !name || name.length > 24 || !icon || icon.length > 16 || !AVATAR_COLORS.has(color)) {
+  if (!id || id.length > 120 || !name || name.length > 120 || !icon || icon.length > 16 || !AVATAR_COLORS.has(color)) {
     return null;
   }
 
@@ -672,6 +688,7 @@ app.get('/api/state', (req, res) => {
 
 app.get('/api/addresses', (req, res) => {
   const port = server.address()?.port || PORT;
+  const exePath = getDownloadExePath();
   const addresses = [
     { label: '本机', url: `http://localhost:${port}` },
     ...getLanAddresses().map((address) => ({
@@ -679,7 +696,30 @@ app.get('/api/addresses', (req, res) => {
       url: `http://${address}:${port}`
     }))
   ];
-  res.json({ addresses });
+  res.json({
+    addresses,
+    download: {
+      available: Boolean(exePath),
+      fileName: EXE_FILE_NAME,
+      label: `下载 ${EXE_FILE_NAME}`,
+      url: EXE_DOWNLOAD_URL
+    }
+  });
+});
+
+app.get(EXE_DOWNLOAD_URL, (req, res, next) => {
+  const exePath = getDownloadExePath();
+
+  if (!exePath) {
+    return notFound(res, `当前没有可下载的 ${EXE_FILE_NAME}，请先重新打包`);
+  }
+
+  return res.download(exePath, EXE_FILE_NAME, (error) => {
+    if (error && !res.headersSent) {
+      return next(error);
+    }
+    return undefined;
+  });
 });
 
 app.get('/api/client-info', (req, res) => {
@@ -780,6 +820,9 @@ app.post('/api/tasks', (req, res) => {
   if (!description) {
     return badRequest(res, '任务描述不能为空');
   }
+  if (description.length > 2000) {
+    return badRequest(res, '任务描述不能超过 2000 个字符');
+  }
   if (!backgroundColor) {
     return badRequest(res, '任务底色无效');
   }
@@ -875,6 +918,9 @@ app.patch('/api/tasks/:id', (req, res) => {
     const description = trimText(req.body.description);
     if (!description) {
       return badRequest(res, '任务描述不能为空');
+    }
+    if (description.length > 2000) {
+      return badRequest(res, '任务描述不能超过 2000 个字符');
     }
     updates.push('description = ?');
     params.push(description);

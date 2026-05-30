@@ -22,12 +22,19 @@
   --shadow-sm: 0 1px 2px rgba(24, 32, 28, 0.08);
   --shadow-md: 0 14px 34px rgba(24, 32, 28, 0.11);
   --shadow-lg: 0 24px 70px rgba(24, 32, 28, 0.2);
-  --radius: 8px;
+  --radius-sm: 10px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
   --sidebar-width: 304px;
-  --ease: 160ms ease;
 }
 
 * {
+  box-sizing: border-box;
+}
+
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
@@ -68,20 +75,6 @@ button {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
-}
-
-button,
-a,
-input,
-textarea,
-select {
-  transition:
-    background-color var(--ease),
-    border-color var(--ease),
-    box-shadow var(--ease),
-    color var(--ease),
-    opacity var(--ease),
-    transform var(--ease);
 }
 
 input,
@@ -388,13 +381,19 @@ select:focus {
   background: rgba(255, 255, 255, 0.68);
 }
 
+.peer-item:hover {
+  border-color: var(--border-strong);
+  background: #fff;
+  transform: translateY(-1px);
+}
+
 .peer-avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   color: #fff;
   font-size: 15px;
   font-weight: 850;
@@ -403,7 +402,7 @@ select:focus {
 
 .peer-name {
   overflow: hidden;
-  color: var(--ink-soft);
+  color: var(--ink);
   font-size: 13px;
   font-weight: 780;
   text-overflow: ellipsis;
@@ -467,7 +466,6 @@ select:focus {
 .project-actions-wrap {
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--ease);
 }
 
 .project-item:hover .project-actions-wrap,
@@ -502,7 +500,15 @@ select:focus {
   right: 0;
   left: auto;
   top: calc(100% + 5px);
+  bottom: auto;
   z-index: 20;
+  max-height: min(260px, calc(100vh - 24px));
+  overflow-y: auto;
+}
+
+.project-item-menu.open-above {
+  top: auto;
+  bottom: calc(100% + 5px);
 }
 
 .project-item span {
@@ -528,6 +534,7 @@ select:focus {
 .project-item:hover {
   border-color: rgba(15, 118, 110, 0.16);
   background: rgba(15, 118, 110, 0.08);
+  transform: translateY(-1px);
 }
 
 .project-item:focus-visible {
@@ -684,6 +691,7 @@ select:focus {
 
 .identity-button > span:last-child {
   overflow: hidden;
+  color: var(--ink);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -725,7 +733,7 @@ select:focus {
   gap: 10px;
   margin-bottom: 16px;
   border: 1px solid rgba(196, 208, 202, 0.82);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   padding: 12px;
   background: rgba(255, 255, 255, 0.82);
   box-shadow: var(--shadow-sm);
@@ -866,7 +874,7 @@ select:focus {
 .column,
 .empty-state {
   border: 1px solid rgba(196, 208, 202, 0.82);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   background: rgba(255, 255, 255, 0.88);
   box-shadow: var(--shadow-md);
 }
@@ -950,6 +958,7 @@ select:focus {
 .column-action:hover {
   border-color: color-mix(in srgb, var(--column-accent) 82%, black);
   background: color-mix(in srgb, var(--column-accent) 82%, black);
+  transform: translateY(-1px);
 }
 
 .task-list {
@@ -1045,7 +1054,7 @@ select:focus {
 
 .task-description-text[tabindex] {
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .task-description-text[tabindex]:hover {
@@ -1055,6 +1064,40 @@ select:focus {
 .task-description-text[tabindex]:focus {
   outline: 3px solid rgba(15, 118, 110, 0.16);
   outline-offset: 3px;
+}
+
+.task-description-text :where(p, ul, ol, blockquote, pre) {
+  margin: 0 0 8px;
+}
+
+.task-description-text :where(p, ul, ol, blockquote, pre):last-child {
+  margin-bottom: 0;
+}
+
+.task-description-text :where(ul, ol) {
+  padding-left: 20px;
+}
+
+.task-description-text a {
+  color: var(--accent-strong);
+  font-weight: 760;
+  text-decoration: underline;
+}
+
+.task-description-text code,
+.task-description-text pre {
+  border-radius: var(--radius-sm);
+  background: rgba(24, 32, 28, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.task-description-text code {
+  padding: 1px 5px;
+}
+
+.task-description-text pre {
+  overflow-x: auto;
+  padding: 8px 10px;
 }
 
 .assignee {
@@ -1081,14 +1124,21 @@ select:focus {
 
 .assignee span:last-child {
   overflow: hidden;
+  color: var(--ink);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.identity-button > span:last-child *,
+.peer-name *,
+.assignee span:last-child * {
+  color: inherit;
 }
 
 .assignee-avatar {
   width: 28px;
   height: 28px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   font-size: 15px;
 }
 
@@ -1157,15 +1207,19 @@ select:focus {
   display: grid;
   min-width: 156px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   padding: 6px;
   background: rgba(255, 255, 255, 0.98);
   box-shadow: var(--shadow-md);
 }
 
+.menu:not(.hidden) {
+  transform-origin: top right;
+}
+
 .menu button {
   min-height: 36px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 0 10px;
   background: transparent;
   color: var(--ink-soft);
@@ -1206,7 +1260,7 @@ select:focus {
   max-height: calc(100vh - 40px);
   overflow-y: auto;
   border: 1px solid rgba(255, 255, 255, 0.78);
-  border-radius: var(--radius);
+  border-radius: var(--radius-xl);
   padding: 18px;
   background: #fff;
   box-shadow: var(--shadow-lg);
@@ -1378,6 +1432,7 @@ select:focus {
   padding: 0 8px 8px;
 }
 
+.address-list a,
 .address-list button,
 .address-list span {
   display: grid;
@@ -1393,9 +1448,21 @@ select:focus {
   text-decoration: none;
 }
 
+.address-download-link {
+  border-color: rgba(15, 118, 110, 0.26);
+  background: var(--accent-soft);
+}
+
+.address-download-link.unavailable {
+  border-style: dashed;
+  background: var(--surface-soft);
+}
+
+.address-list a:hover,
 .address-list button:hover {
   border-color: rgba(15, 118, 110, 0.32);
   background: var(--accent-soft);
+  transform: translateY(-1px);
 }
 
 .address-list strong {
@@ -1604,11 +1671,3 @@ select:focus {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-  }
-}

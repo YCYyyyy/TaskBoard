@@ -35,6 +35,32 @@ const TASK_BACKGROUNDS = [
 const FILE_CHUNK_SIZE = 64 * 1024;
 const DATA_CHANNEL_BUFFER_LIMIT = 1024 * 1024;
 const TASK_NOTIFICATION_SUPPRESS_MS = 6000;
+const ALLOWED_TASK_HTML_TAGS = new Set([
+  'a',
+  'b',
+  'blockquote',
+  'br',
+  'code',
+  'div',
+  'em',
+  'i',
+  'li',
+  'mark',
+  'ol',
+  'p',
+  'pre',
+  's',
+  'small',
+  'span',
+  'strong',
+  'sub',
+  'sup',
+  'u',
+  'ul'
+]);
+const ALLOWED_NAME_HTML_TAGS = new Set(['b', 'br', 'code', 'em', 'i', 'mark', 's', 'small', 'span', 'strong', 'sub', 'sup', 'u']);
+const REMOVED_HTML_TAGS = new Set(['base', 'embed', 'iframe', 'link', 'meta', 'object', 'script', 'style']);
+const ALLOWED_HTML_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
 const TRANSFER_STATUSES = {
   'incoming-request': '等待确认',
   waiting: '等待接收',
@@ -323,7 +349,7 @@ function updateIdentity(patch) {
   state.identity = {
     ...state.identity,
     ...patch,
-    name: typeof patch.name === 'string' ? patch.name.trim() : state.identity.name
+    name: typeof patch.name === 'string' ? patch.name.trim().slice(0, 120) : state.identity.name
   };
   if (!state.identity.name) {
     state.identity.name = DEFAULT_IDENTITY_NAME;
@@ -354,7 +380,7 @@ function scheduleIdentityTaskSync(previousIdentity) {
 }
 
 function renderIdentity() {
-  els.identityDisplayName.textContent = state.identity.name;
+  setSafeHtml(els.identityDisplayName, state.identity.name, { inlineOnly: true });
   els.avatarPreview.style.background = state.identity.color;
   els.avatarPreviewIcon.textContent = state.identity.icon;
 
@@ -365,6 +391,77 @@ function renderIdentity() {
   els.identityColors.querySelectorAll('.color-swatch').forEach((button) => {
     button.classList.toggle('selected', button.dataset.color === state.identity.color);
   });
+}
+
+function setSafeHtml(element, html, options = {}) {
+  const template = document.createElement('template');
+  template.innerHTML = typeof html === 'string' ? html : '';
+  sanitizeHtmlFragment(template.content, options.inlineOnly ? ALLOWED_NAME_HTML_TAGS : ALLOWED_TASK_HTML_TAGS);
+  element.replaceChildren(template.content);
+}
+
+function sanitizeHtmlFragment(parent, allowedTags) {
+  for (const node of Array.from(parent.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      continue;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      node.remove();
+      continue;
+    }
+
+    const tagName = node.tagName.toLowerCase();
+    if (REMOVED_HTML_TAGS.has(tagName)) {
+      node.remove();
+      continue;
+    }
+
+    if (!allowedTags.has(tagName)) {
+      const fragment = document.createDocumentFragment();
+      while (node.firstChild) {
+        fragment.append(node.firstChild);
+      }
+      sanitizeHtmlFragment(fragment, allowedTags);
+      node.replaceWith(fragment);
+      continue;
+    }
+
+    sanitizeHtmlAttributes(node, tagName);
+    sanitizeHtmlFragment(node, allowedTags);
+  }
+}
+
+function sanitizeHtmlAttributes(element, tagName) {
+  const href = element.getAttribute('href');
+  const title = element.getAttribute('title');
+
+  for (const attribute of Array.from(element.attributes)) {
+    element.removeAttribute(attribute.name);
+  }
+
+  if (title) {
+    element.setAttribute('title', title.slice(0, 120));
+  }
+
+  if (tagName === 'a' && isSafeHtmlHref(href)) {
+    element.setAttribute('href', href);
+    element.setAttribute('target', '_blank');
+    element.setAttribute('rel', 'noopener noreferrer');
+  }
+}
+
+function isSafeHtmlHref(href) {
+  if (!href) {
+    return false;
+  }
+
+  try {
+    const url = new URL(href, window.location.origin);
+    return ALLOWED_HTML_PROTOCOLS.has(url.protocol);
+  } catch {
+    return false;
+  }
 }
 
 async function fetchState() {
@@ -379,9 +476,9 @@ async function fetchState() {
 async function fetchAddresses() {
   try {
     const data = await request('/api/addresses');
-    renderAddresses(Array.isArray(data.addresses) ? data.addresses : []);
+    renderAddresses(Array.isArray(data.addresses) ? data.addresses : [], data.download);
   } catch {
-    renderAddresses([]);
+    renderAddresses([], null);
   }
 }
 
@@ -395,8 +492,9 @@ async function fetchClientInfo() {
   } catch {}
 }
 
-function renderAddresses(addresses) {
+function renderAddresses(addresses, download) {
   els.addressList.replaceChildren();
+  renderExeDownload(download);
 
   if (!addresses.length) {
     const empty = document.createElement('span');
@@ -413,6 +511,33 @@ function renderAddresses(addresses) {
     button.addEventListener('click', () => copyAddress(address.url));
     els.addressList.append(button);
   }
+}
+
+function renderExeDownload(download) {
+  const available = download?.available !== false;
+  const fileName = typeof download?.fileName === 'string' && download.fileName.trim()
+    ? download.fileName.trim()
+    : 'TaskBoard.exe';
+  const label = typeof download?.label === 'string' && download.label.trim()
+    ? download.label.trim()
+    : `下载 ${fileName}`;
+
+  if (!available) {
+    const unavailable = document.createElement('span');
+    unavailable.className = 'address-download-link unavailable';
+    unavailable.innerHTML = '<strong></strong>';
+    unavailable.querySelector('strong').textContent = `${fileName} 暂不可下载`;
+    els.addressList.append(unavailable);
+    return;
+  }
+
+  const link = document.createElement('a');
+  link.className = 'address-download-link';
+  link.href = typeof download?.url === 'string' && download.url ? download.url : '/api/download/taskboard.exe';
+  link.download = fileName;
+  link.innerHTML = '<strong></strong>';
+  link.querySelector('strong').textContent = label;
+  els.addressList.append(link);
 }
 
 function shouldUseDefaultIdentityName(name) {
@@ -631,8 +756,16 @@ function isTaskNotificationSuppressed(taskId) {
 }
 
 function shortTaskText(text) {
-  const value = typeof text === 'string' && text.trim() ? text.trim() : '未命名任务';
+  const plainText = htmlToPlainText(text);
+  const value = plainText.trim() ? plainText.trim() : '未命名任务';
   return value.length > 36 ? `${value.slice(0, 36)}...` : value;
+}
+
+function htmlToPlainText(html) {
+  const template = document.createElement('template');
+  template.innerHTML = typeof html === 'string' ? html : '';
+  sanitizeHtmlFragment(template.content, ALLOWED_TASK_HTML_TAGS);
+  return template.content.textContent || '';
 }
 
 function applyPresenceList(peers) {
@@ -671,7 +804,8 @@ function renderPeers() {
     `;
     item.querySelector('.peer-avatar').style.background = peer.color;
     item.querySelector('.peer-avatar').textContent = peer.icon;
-    item.querySelector('.peer-name').textContent = peer.name;
+    const peerName = item.querySelector('.peer-name');
+    setSafeHtml(peerName, peer.name, { inlineOnly: true });
 
     const sendButton = item.querySelector('.peer-send-button');
     sendButton.disabled = !canTransferFiles();
@@ -1541,6 +1675,9 @@ function createProjectActions(project) {
     const shouldOpen = menu.classList.contains('hidden');
     closeMenus();
     menu.classList.toggle('hidden', !shouldOpen);
+    if (shouldOpen) {
+      placeProjectMenu(menu, trigger);
+    }
   });
 
   menu.append(
@@ -1658,9 +1795,9 @@ function createTaskCard(task, project) {
   card.className = 'task-card';
   card.dataset.background = isTaskBackground(task.backgroundColor) ? task.backgroundColor : 'white';
 
-  const description = document.createElement('p');
+  const description = document.createElement('div');
   description.className = 'task-description-text';
-  description.textContent = task.description;
+  setSafeHtml(description, task.description);
   if (!project.isArchived) {
     description.tabIndex = 0;
     description.title = '点击编辑';
@@ -1710,7 +1847,7 @@ function createTaskAssignee(task) {
   avatar.textContent = task.assigneeIcon || '◆';
 
   const name = document.createElement('span');
-  name.textContent = task.assigneeName;
+  setSafeHtml(name, task.assigneeName, { inlineOnly: true });
 
   assignee.append(avatar, name);
   return assignee;
@@ -1796,9 +1933,13 @@ function patchTaskStatus(taskId, status, assignee) {
 }
 
 function normalizeIdentity(identity) {
+  const name = typeof identity.name === 'string' && identity.name.trim()
+    ? identity.name.trim().slice(0, 120)
+    : DEFAULT_IDENTITY_NAME;
+
   return {
     id: typeof identity.id === 'string' && identity.id.trim() ? identity.id.trim() : createIdentityId(),
-    name: typeof identity.name === 'string' && identity.name.trim() ? identity.name.trim() : DEFAULT_IDENTITY_NAME,
+    name,
     icon: AVATAR_ICONS.includes(identity.icon) ? identity.icon : AVATAR_ICONS[0],
     color: AVATAR_COLORS.includes(identity.color) ? identity.color : AVATAR_COLORS[0]
   };
@@ -1847,8 +1988,27 @@ function closeMenus(except) {
   document.querySelectorAll('.menu:not(.hidden)').forEach((menu) => {
     if (menu !== except) {
       menu.classList.add('hidden');
+      menu.classList.remove('open-above');
     }
   });
+}
+
+function placeProjectMenu(menu, trigger) {
+  menu.classList.remove('open-above');
+
+  const sidebar = trigger.closest('.sidebar');
+  const sidebarRect = sidebar?.getBoundingClientRect();
+  const triggerRect = trigger.getBoundingClientRect();
+  const boundaryTop = sidebarRect ? Math.max(sidebarRect.top, 0) : 0;
+  const boundaryBottom = sidebarRect ? Math.min(sidebarRect.bottom, window.innerHeight) : window.innerHeight;
+  const gap = 5;
+  const menuHeight = menu.offsetHeight;
+  const spaceBelow = boundaryBottom - triggerRect.bottom - gap;
+  const spaceAbove = triggerRect.top - boundaryTop - gap;
+
+  if (spaceBelow < menuHeight && spaceAbove > spaceBelow) {
+    menu.classList.add('open-above');
+  }
 }
 
 async function request(url, options = {}) {
