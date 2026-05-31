@@ -12,7 +12,7 @@
         <div class="brand-row">
           <div>
             <button class="brand-button" id="addressButton" type="button">TaskBoard</button>
-            <p>局域网任务协作</p>
+            <p>任务协作备忘录</p>
           </div>
         </div>
 
@@ -98,7 +98,7 @@
         <div class="identity-editor">
           <label>
             姓名
-            <input id="identityName" type="text" maxlength="120" placeholder="你的姓名" />
+            <input id="identityName" type="text" placeholder="你的姓名" />
           </label>
           <div>
             <div class="field-label">头像图标</div>
@@ -144,12 +144,16 @@
     <div class="modal hidden" id="projectRenameModal" role="dialog" aria-modal="true" aria-labelledby="projectRenameTitle">
       <form class="modal-panel" id="renameProjectForm">
         <div class="modal-head">
-          <h2 id="projectRenameTitle">修改项目名</h2>
+          <h2 id="projectRenameTitle">编辑项目</h2>
           <button class="icon-button" type="button" data-close-modal title="关闭" aria-label="关闭">×</button>
         </div>
         <label>
           项目名称
           <input id="renameProjectInput" type="text" maxlength="60" placeholder="项目名称" />
+        </label>
+        <label class="checkbox-row">
+          <input id="renameProjectPinnedInput" type="checkbox" />
+          <span>置顶项目</span>
         </label>
         <div class="modal-actions">
           <button class="secondary-action" type="button" data-close-modal>取消</button>
@@ -166,12 +170,16 @@
         </div>
         <label>
           任务描述
-          <textarea id="taskDescriptionInput" rows="6" maxlength="2000" placeholder="写下任务描述"></textarea>
+          <textarea id="taskDescriptionInput" rows="6" placeholder="写下任务描述"></textarea>
         </label>
         <div>
           <div class="field-label">任务底色</div>
           <div class="task-color-grid" id="taskBackgroundColors"></div>
         </div>
+        <label class="checkbox-row">
+          <input id="taskPinnedInput" type="checkbox" />
+          <span>置顶任务</span>
+        </label>
         <div class="modal-actions">
           <button class="secondary-action" type="button" data-close-modal>取消</button>
           <button class="primary-action" type="submit" id="taskSubmitButton">新建</button>

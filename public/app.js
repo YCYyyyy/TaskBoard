@@ -117,8 +117,10 @@ const els = {
   openTaskCreateButton: document.querySelector('#openTaskCreateButton'),
   renameProjectForm: document.querySelector('#renameProjectForm'),
   renameProjectInput: document.querySelector('#renameProjectInput'),
+  renameProjectPinnedInput: document.querySelector('#renameProjectPinnedInput'),
   taskForm: document.querySelector('#taskForm'),
   taskDescriptionInput: document.querySelector('#taskDescriptionInput'),
+  taskPinnedInput: document.querySelector('#taskPinnedInput'),
   taskBackgroundColors: document.querySelector('#taskBackgroundColors'),
   taskModalTitle: document.querySelector('#taskModalTitle'),
   taskSubmitButton: document.querySelector('#taskSubmitButton'),
@@ -189,11 +191,12 @@ function setupEvents() {
     event.preventDefault();
     const project = selectedProject();
     const name = els.renameProjectInput.value.trim();
+    const isPinned = els.renameProjectPinnedInput.checked;
     if (!project || !name) {
       return showToast('项目名不能为空');
     }
 
-    await request(`/api/projects/${project.id}`, { method: 'PATCH', body: { name } });
+    await request(`/api/projects/${project.id}`, { method: 'PATCH', body: { name, isPinned } });
     closeModal(els.projectRenameModal);
   });
 
@@ -207,6 +210,7 @@ function setupEvents() {
     els.taskModalTitle.textContent = '新建任务';
     els.taskSubmitButton.textContent = '新建';
     els.taskDescriptionInput.value = '';
+    els.taskPinnedInput.checked = false;
     renderTaskBackgroundOptions();
     openModal(els.taskModal, els.taskDescriptionInput);
   });
@@ -229,12 +233,12 @@ function setupEvents() {
       }
       await request(`/api/tasks/${state.editingTaskId}`, {
         method: 'PATCH',
-        body: { description, backgroundColor: state.taskBackgroundColor }
+        body: { description, backgroundColor: state.taskBackgroundColor, isPinned: els.taskPinnedInput.checked }
       });
     } else {
       await request('/api/tasks', {
         method: 'POST',
-        body: { projectId: project.id, description, backgroundColor: state.taskBackgroundColor }
+        body: { projectId: project.id, description, backgroundColor: state.taskBackgroundColor, isPinned: els.taskPinnedInput.checked }
       });
     }
 
@@ -349,7 +353,7 @@ function updateIdentity(patch) {
   state.identity = {
     ...state.identity,
     ...patch,
-    name: typeof patch.name === 'string' ? patch.name.trim().slice(0, 120) : state.identity.name
+    name: typeof patch.name === 'string' ? patch.name.trim() : state.identity.name
   };
   if (!state.identity.name) {
     state.identity.name = DEFAULT_IDENTITY_NAME;
@@ -394,10 +398,7 @@ function renderIdentity() {
 }
 
 function setSafeHtml(element, html, options = {}) {
-  const template = document.createElement('template');
-  template.innerHTML = typeof html === 'string' ? html : '';
-  sanitizeHtmlFragment(template.content, options.inlineOnly ? ALLOWED_NAME_HTML_TAGS : ALLOWED_TASK_HTML_TAGS);
-  element.replaceChildren(template.content);
+  element.innerHTML = typeof html === 'string' ? html : '';
 }
 
 function sanitizeHtmlFragment(parent, allowedTags) {
@@ -1635,10 +1636,15 @@ function renderProjectList(container, projects) {
     const item = document.createElement('div');
     item.className = 'project-item';
     item.classList.toggle('active', project.id === state.selectedProjectId);
+    item.classList.toggle('pinned', Boolean(project.isPinned));
     item.tabIndex = 0;
     item.setAttribute('role', 'button');
-    item.innerHTML = '<span></span>';
-    item.querySelector('span').textContent = project.name;
+    item.innerHTML = '<span class="project-name"></span>';
+    item.querySelector('.project-name').textContent = project.name;
+    if (project.isPinned) {
+      const badge = createPinBadge();
+      item.append(badge);
+    }
     item.addEventListener('click', () => selectProject(project.id));
     item.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
@@ -1681,7 +1687,7 @@ function createProjectActions(project) {
   });
 
   menu.append(
-    projectMenuButton('修改项目名', () => openProjectRename(project)),
+    projectMenuButton('编辑项目', () => openProjectRename(project)),
     project.isArchived
       ? projectMenuButton('恢复项目', () => patchProjectArchive(project, false))
       : projectMenuButton('归档项目', () => patchProjectArchive(project, true))
@@ -1717,6 +1723,7 @@ function openProjectRename(project) {
   state.selectedProjectId = project.id;
   render();
   els.renameProjectInput.value = project.name;
+  els.renameProjectPinnedInput.checked = Boolean(project.isPinned);
   openModal(els.projectRenameModal, els.renameProjectInput);
 }
 
@@ -1793,6 +1800,7 @@ function renderTaskList(container, tasks, project) {
 function createTaskCard(task, project) {
   const card = document.createElement('article');
   card.className = 'task-card';
+  card.classList.toggle('pinned', Boolean(task.isPinned));
   card.dataset.background = isTaskBackground(task.backgroundColor) ? task.backgroundColor : 'white';
 
   const description = document.createElement('div');
@@ -1808,6 +1816,12 @@ function createTaskCard(task, project) {
         openTaskEdit(task);
       }
     });
+  }
+
+  if (task.isPinned) {
+    const badge = createPinBadge();
+    badge.classList.add('task-pin-badge');
+    card.append(badge);
   }
 
   card.append(description);
@@ -1907,8 +1921,16 @@ function openTaskEdit(task) {
   els.taskModalTitle.textContent = '编辑任务';
   els.taskSubmitButton.textContent = '保存';
   els.taskDescriptionInput.value = task.description;
+  els.taskPinnedInput.checked = Boolean(task.isPinned);
   renderTaskBackgroundOptions();
   openModal(els.taskModal, els.taskDescriptionInput);
+}
+
+function createPinBadge() {
+  const badge = document.createElement('span');
+  badge.className = 'pin-badge';
+  badge.textContent = '置顶';
+  return badge;
 }
 
 function isTaskBackground(value) {
@@ -1934,7 +1956,7 @@ function patchTaskStatus(taskId, status, assignee) {
 
 function normalizeIdentity(identity) {
   const name = typeof identity.name === 'string' && identity.name.trim()
-    ? identity.name.trim().slice(0, 120)
+    ? identity.name.trim()
     : DEFAULT_IDENTITY_NAME;
 
   return {

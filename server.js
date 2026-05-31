@@ -120,6 +120,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    is_pinned INTEGER NOT NULL DEFAULT 0,
     is_archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -130,6 +131,7 @@ db.exec(`
     project_id INTEGER NOT NULL,
     description TEXT NOT NULL,
     background_color TEXT NOT NULL DEFAULT 'white',
+    is_pinned INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'open',
     assignee_id TEXT,
     assignee_name TEXT,
@@ -143,8 +145,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
 `);
 
+ensureProjectColumn('is_pinned', 'INTEGER NOT NULL DEFAULT 0');
 ensureTaskColumn('assignee_id', 'TEXT');
 ensureTaskColumn('background_color', "TEXT NOT NULL DEFAULT 'white'");
+ensureTaskColumn('is_pinned', 'INTEGER NOT NULL DEFAULT 0');
 db.prepare(`
   UPDATE tasks
   SET
@@ -164,7 +168,7 @@ const peers = new Map();
 const transfers = new Map();
 const SEA_ASSET_KEYS = IS_SEA ? new Set(sea.getAssetKeys()) : new Set();
 
-app.use(express.json({ limit: '32kb' }));
+app.use(express.json({ limit: '2mb' }));
 app.use(IS_SEA ? serveSeaStatic : express.static(path.join(__dirname, 'public')));
 
 app.use((err, req, res, next) => {
@@ -243,16 +247,30 @@ function ensureTaskColumn(column, definition) {
   }
 }
 
+function ensureProjectColumn(column, definition) {
+  const exists = db.prepare('PRAGMA table_info(projects)').all().some((field) => field.name === column);
+  if (!exists) {
+    db.exec(`ALTER TABLE projects ADD COLUMN ${column} ${definition}`);
+  }
+}
+
 function readState() {
   const projects = db
     .prepare(`
-      SELECT id, name, is_archived AS isArchived, created_at AS createdAt, updated_at AS updatedAt
+      SELECT
+        id,
+        name,
+        is_pinned AS isPinned,
+        is_archived AS isArchived,
+        created_at AS createdAt,
+        updated_at AS updatedAt
       FROM projects
-      ORDER BY is_archived ASC, updated_at DESC, id DESC
+      ORDER BY is_archived ASC, is_pinned DESC, updated_at DESC, id DESC
     `)
     .all()
     .map((project) => ({
       ...project,
+      isPinned: Boolean(project.isPinned),
       isArchived: Boolean(project.isArchived)
     }));
 
@@ -263,6 +281,7 @@ function readState() {
         project_id AS projectId,
         description,
         background_color AS backgroundColor,
+        is_pinned AS isPinned,
         status,
         assignee_id AS assigneeId,
         assignee_name AS assigneeName,
@@ -271,9 +290,13 @@ function readState() {
         created_at AS createdAt,
         updated_at AS updatedAt
       FROM tasks
-      ORDER BY updated_at DESC, id DESC
+      ORDER BY is_pinned DESC, updated_at DESC, id DESC
     `)
-    .all();
+    .all()
+    .map((task) => ({
+      ...task,
+      isPinned: Boolean(task.isPinned)
+    }));
 
   return { projects, tasks };
 }
@@ -289,7 +312,7 @@ function broadcastState() {
 
 function getProject(id) {
   return db
-    .prepare('SELECT id, name, is_archived AS isArchived FROM projects WHERE id = ?')
+    .prepare('SELECT id, name, is_pinned AS isPinned, is_archived AS isArchived FROM projects WHERE id = ?')
     .get(id);
 }
 
@@ -325,7 +348,7 @@ function normalizeAssignee(body, options = {}) {
   const icon = trimText(body.assigneeIcon);
   const color = trimText(body.assigneeColor);
 
-  if ((options.requireId && !id) || id.length > 120 || !name || name.length > 120 || !icon || !AVATAR_COLORS.has(color)) {
+  if ((options.requireId && !id) || id.length > 120 || !name || !icon || !AVATAR_COLORS.has(color)) {
     return null;
   }
 
@@ -351,7 +374,7 @@ function normalizePresenceIdentity(value) {
   const icon = trimText(value.icon);
   const color = trimText(value.color);
 
-  if (!id || id.length > 120 || !name || name.length > 120 || !icon || icon.length > 16 || !AVATAR_COLORS.has(color)) {
+  if (!id || id.length > 120 || !name || !icon || icon.length > 16 || !AVATAR_COLORS.has(color)) {
     return null;
   }
 
@@ -777,6 +800,11 @@ app.patch('/api/projects/:id', (req, res) => {
     params.push(toBooleanInt(req.body.isArchived));
   }
 
+  if (Object.prototype.hasOwnProperty.call(req.body, 'isPinned')) {
+    updates.push('is_pinned = ?');
+    params.push(toBooleanInt(req.body.isPinned));
+  }
+
   if (!updates.length) {
     return badRequest(res, '没有可更新的项目字段');
   }
@@ -813,15 +841,13 @@ app.post('/api/tasks', (req, res) => {
   const projectId = normalizeId(req.body.projectId);
   const description = trimText(req.body.description);
   const backgroundColor = normalizeTaskBackground(req.body.backgroundColor);
+  const isPinned = toBooleanInt(req.body.isPinned);
 
   if (!projectId) {
     return badRequest(res, '项目 ID 无效');
   }
   if (!description) {
     return badRequest(res, '任务描述不能为空');
-  }
-  if (description.length > 2000) {
-    return badRequest(res, '任务描述不能超过 2000 个字符');
   }
   if (!backgroundColor) {
     return badRequest(res, '任务底色无效');
@@ -838,10 +864,10 @@ app.post('/api/tasks', (req, res) => {
   const createdAt = now();
   const result = db
     .prepare(`
-      INSERT INTO tasks (project_id, description, background_color, status, created_at, updated_at)
-      VALUES (?, ?, ?, 'open', ?, ?)
+      INSERT INTO tasks (project_id, description, background_color, is_pinned, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'open', ?, ?)
     `)
-    .run(projectId, description, backgroundColor, createdAt, createdAt);
+    .run(projectId, description, backgroundColor, isPinned, createdAt, createdAt);
 
   broadcastState();
   return res.status(201).json({ id: result.lastInsertRowid });
@@ -919,9 +945,6 @@ app.patch('/api/tasks/:id', (req, res) => {
     if (!description) {
       return badRequest(res, '任务描述不能为空');
     }
-    if (description.length > 2000) {
-      return badRequest(res, '任务描述不能超过 2000 个字符');
-    }
     updates.push('description = ?');
     params.push(description);
   }
@@ -933,6 +956,11 @@ app.patch('/api/tasks/:id', (req, res) => {
     }
     updates.push('background_color = ?');
     params.push(backgroundColor);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body, 'isPinned')) {
+    updates.push('is_pinned = ?');
+    params.push(toBooleanInt(req.body.isPinned));
   }
 
   if (Object.prototype.hasOwnProperty.call(req.body, 'status')) {
