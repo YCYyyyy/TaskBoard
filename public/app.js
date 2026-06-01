@@ -2598,13 +2598,23 @@ function addPersistentNotification(title, body) {
     <div>
       <strong></strong>
       <p></p>
+      <time></time>
     </div>
     <button type="button" title="关闭" aria-label="关闭">×</button>
   `;
+  const createdAt = new Date();
   item.querySelector('strong').textContent = title;
   item.querySelector('p').textContent = body;
+  const time = item.querySelector('time');
+  time.dateTime = createdAt.toISOString();
+  time.textContent = formatNotificationTimestamp(createdAt);
   item.querySelector('button').addEventListener('click', () => item.remove());
   els.notificationStack.prepend(item);
+}
+
+function formatNotificationTimestamp(date) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function requestBrowserNotificationPermission() {
