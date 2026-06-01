@@ -14,8 +14,17 @@ const DEFAULT_PORT = 3000;
 const PORT = normalizePort(process.env.PORT, DEFAULT_PORT);
 const MAX_PORT_ATTEMPTS = normalizeRetryLimit(process.env.PORT_RETRY_LIMIT, 50);
 const HOST = process.env.HOST || '0.0.0.0';
-const MAX_SIGNAL_BYTES = 64 * 1024;
+const MAX_SIGNAL_BYTES = 2 * 1024 * 1024;
+const MAX_BINARY_RELAY_HEADER_BYTES = 8 * 1024;
+const MAX_BINARY_RELAY_CHUNK_BYTES = 2 * 1024 * 1024;
+const MAX_BINARY_RELAY_FRAME_BYTES = 4 + MAX_BINARY_RELAY_HEADER_BYTES + MAX_BINARY_RELAY_CHUNK_BYTES;
 const TRANSFER_TTL_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_RTC_ICE_SERVERS = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }
+];
+const RTC_ICE_SERVERS = parseRtcIceServers(process.env.RTC_ICE_SERVERS);
+const SENDER_RELAY_TYPES = new Set(['relay:start', 'relay:chunk', 'relay:complete']);
+const RECEIVER_RELAY_TYPES = new Set(['relay:ack', 'relay:received', 'relay:error']);
 const EXE_FILE_NAME = 'TaskBoard.exe';
 const EXE_DOWNLOAD_URL = '/api/download/taskboard.exe';
 const IS_SEA = sea.isSea();
@@ -337,6 +346,77 @@ function normalizeRetryLimit(value, fallback) {
   return Number.isInteger(retryLimit) && retryLimit >= 0 ? retryLimit : fallback;
 }
 
+function parseRtcIceServers(value) {
+  const text = trimText(value);
+  if (!text) {
+    return DEFAULT_RTC_ICE_SERVERS;
+  }
+
+  if (/^(none|off|false|0)$/i.test(text)) {
+    return [];
+  }
+
+  if (text.startsWith('[') || text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text);
+      const normalized = normalizeRtcIceServers(Array.isArray(parsed) ? parsed : [parsed]);
+      return normalized || DEFAULT_RTC_ICE_SERVERS;
+    } catch {
+      console.warn('RTC_ICE_SERVERS is not valid JSON, using default STUN servers.');
+      return DEFAULT_RTC_ICE_SERVERS;
+    }
+  }
+
+  const normalized = normalizeRtcIceServers(
+    text
+      .split(',')
+      .map((url) => ({ urls: url.trim() }))
+  );
+  return normalized || DEFAULT_RTC_ICE_SERVERS;
+}
+
+function normalizeRtcIceServers(servers) {
+  if (!Array.isArray(servers)) {
+    return null;
+  }
+
+  const normalized = servers.map(normalizeRtcIceServer).filter(Boolean);
+  return normalized.length ? normalized : null;
+}
+
+function normalizeRtcIceServer(server) {
+  if (!server || typeof server !== 'object') {
+    return null;
+  }
+
+  const urls = Array.isArray(server.urls)
+    ? server.urls.map(trimText).filter(isRtcIceServerUrl)
+    : [trimText(server.urls)].filter(isRtcIceServerUrl);
+
+  if (!urls.length) {
+    return null;
+  }
+
+  const normalized = { urls: urls.length === 1 ? urls[0] : urls };
+  const username = trimText(server.username);
+  const credential = trimText(server.credential);
+  const credentialType = trimText(server.credentialType);
+  if (username) {
+    normalized.username = username;
+  }
+  if (credential) {
+    normalized.credential = credential;
+  }
+  if (credentialType) {
+    normalized.credentialType = credentialType;
+  }
+  return normalized;
+}
+
+function isRtcIceServerUrl(url) {
+  return /^(stun|turn|turns):/i.test(url);
+}
+
 function normalizeTaskBackground(value) {
   const color = trimText(value) || 'white';
   return TASK_BACKGROUNDS.has(color) ? color : null;
@@ -492,7 +572,47 @@ function handleSocketMessage(peer, data) {
 
   if (message.type === 'rtc:offer' || message.type === 'rtc:answer' || message.type === 'rtc:ice') {
     handleRtcSignal(peer, message.type, payload);
+    return;
   }
+
+  if (SENDER_RELAY_TYPES.has(message.type) || RECEIVER_RELAY_TYPES.has(message.type)) {
+    handleRelayMessage(peer, message.type, payload);
+  }
+}
+
+function handleBinarySocketMessage(peer, data) {
+  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  if (buffer.length < 4 || buffer.length > MAX_BINARY_RELAY_FRAME_BYTES) {
+    sendTransferError(peer, null, '中转分片过大');
+    return;
+  }
+
+  const headerLength = buffer.readUInt32BE(0);
+  if (headerLength <= 0 || headerLength > MAX_BINARY_RELAY_HEADER_BYTES || 4 + headerLength > buffer.length) {
+    sendTransferError(peer, null, '中转分片头无效');
+    return;
+  }
+
+  let message;
+  try {
+    message = JSON.parse(buffer.subarray(4, 4 + headerLength).toString('utf8'));
+  } catch {
+    sendTransferError(peer, null, '中转分片头解析失败');
+    return;
+  }
+
+  if (!message || message.type !== 'relay:chunk' || !message.payload || typeof message.payload !== 'object') {
+    sendTransferError(peer, null, '中转分片类型无效');
+    return;
+  }
+
+  const chunk = buffer.subarray(4 + headerLength);
+  if (!chunk.length || chunk.length > MAX_BINARY_RELAY_CHUNK_BYTES) {
+    sendTransferError(peer, message.payload.transferId || null, '中转分片大小无效');
+    return;
+  }
+
+  handleRelayBinaryChunk(peer, message.payload, chunk);
 }
 
 function handlePresenceMessage(peer, payload) {
@@ -622,6 +742,106 @@ function handleRtcSignal(peer, type, payload) {
     forwarded.candidate = payload.candidate;
   }
   sendPeer(targetPeer, type, forwarded);
+}
+
+function handleRelayMessage(peer, type, payload) {
+  const transferId = createTransferId(payload.transferId);
+  const transfer = transferId ? transfers.get(transferId) : null;
+  if (!transfer || (transfer.fromPeerId !== peer.peerId && transfer.toPeerId !== peer.peerId)) {
+    sendTransferError(peer, transferId, '传输会话不存在');
+    return;
+  }
+
+  const fromSender = transfer.fromPeerId === peer.peerId;
+  if ((SENDER_RELAY_TYPES.has(type) && !fromSender) || (RECEIVER_RELAY_TYPES.has(type) && fromSender)) {
+    sendTransferError(peer, transferId, '中转消息方向无效');
+    return;
+  }
+
+  const expectedTargetId = fromSender ? transfer.toPeerId : transfer.fromPeerId;
+  if (trimText(payload.toPeerId) !== expectedTargetId) {
+    sendTransferError(peer, transferId, '中转目标无效');
+    return;
+  }
+
+  const targetPeer = peers.get(expectedTargetId);
+  if (!targetPeer) {
+    transfers.delete(transferId);
+    sendTransferError(peer, transferId, '目标用户已离线');
+    return;
+  }
+
+  const forwarded = { transferId, fromPeerId: peer.peerId };
+  for (const key of ['offset', 'bytes', 'chunk', 'message']) {
+    if (Object.prototype.hasOwnProperty.call(payload, key)) {
+      forwarded[key] = payload[key];
+    }
+  }
+
+  sendPeer(targetPeer, type, forwarded);
+  if (type === 'relay:error') {
+    transfers.delete(transferId);
+  }
+}
+
+function handleRelayBinaryChunk(peer, payload, chunk) {
+  const transferId = createTransferId(payload.transferId);
+  const transfer = transferId ? transfers.get(transferId) : null;
+  if (!transfer || transfer.fromPeerId !== peer.peerId) {
+    sendTransferError(peer, transferId, '传输会话不存在');
+    return;
+  }
+
+  if (trimText(payload.toPeerId) !== transfer.toPeerId) {
+    sendTransferError(peer, transferId, '中转目标无效');
+    return;
+  }
+
+  const targetPeer = peers.get(transfer.toPeerId);
+  if (!targetPeer) {
+    transfers.delete(transferId);
+    sendTransferError(peer, transferId, '目标用户已离线');
+    return;
+  }
+
+  const offset = Number(payload.offset);
+  const bytes = Number(payload.bytes);
+  if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(bytes) || bytes !== chunk.length) {
+    sendTransferError(peer, transferId, '中转分片元数据无效');
+    return;
+  }
+
+  const sent = sendRelayBinary(targetPeer, 'relay:chunk', {
+    transferId,
+    fromPeerId: peer.peerId,
+    offset,
+    bytes: chunk.length
+  }, chunk);
+  if (!sent) {
+    sendTransferError(peer, transferId, '中转分片转发失败');
+  }
+}
+
+function sendRelayBinary(peer, type, payload, chunk) {
+  if (peer.socket.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+
+  const header = Buffer.from(JSON.stringify({ type, payload }), 'utf8');
+  if (header.length > MAX_BINARY_RELAY_HEADER_BYTES || chunk.length > MAX_BINARY_RELAY_CHUNK_BYTES) {
+    return false;
+  }
+
+  const frame = Buffer.allocUnsafe(4 + header.length + chunk.length);
+  frame.writeUInt32BE(header.length, 0);
+  header.copy(frame, 4);
+  chunk.copy(frame, 4 + header.length);
+  try {
+    peer.socket.send(frame, { binary: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function handleTransferCancel(peer, payload) {
@@ -755,6 +975,10 @@ app.get('/api/client-info', (req, res) => {
     ip: preferredAddress || '',
     defaultName: preferredAddress || '匿名用户'
   });
+});
+
+app.get('/api/rtc-config', (req, res) => {
+  res.json({ iceServers: RTC_ICE_SERVERS });
 });
 
 app.post('/api/projects', (req, res) => {
@@ -1044,7 +1268,13 @@ wss.on('connection', (socket) => {
   sendPeer(peer, 'state:update', readState());
   broadcastPresence();
 
-  socket.on('message', (data) => handleSocketMessage(peer, data));
+  socket.on('message', (data, isBinary) => {
+    if (isBinary) {
+      handleBinarySocketMessage(peer, data);
+      return;
+    }
+    handleSocketMessage(peer, data);
+  });
   socket.on('error', () => cleanupPeer(peer));
   socket.on('close', () => cleanupPeer(peer));
 });

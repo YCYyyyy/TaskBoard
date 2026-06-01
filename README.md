@@ -93,13 +93,26 @@ SQLite 运行时还可能生成 `taskboard.db-shm` 和 `taskboard.db-wal` 文件
 
 ## 局域网文件传输
 
-页面侧边栏会显示当前连接到同一服务的在线用户。点击用户旁边的发送按钮可以选择文件并发起传输；接收方确认后，浏览器会通过 WebRTC DataChannel 尝试局域网点对点直连。
+页面侧边栏会显示当前连接到同一服务的在线用户。点击用户旁边的发送按钮可以选择文件并发起传输；接收方确认后，浏览器会通过 WebRTC DataChannel 尝试局域网点对点直连，直连失败时会自动切换为 WebSocket 中转。
 
-文件内容不经过服务器，也不会写入 `data/taskboard.db`。服务器只转发在线状态和 WebRTC 信令。
+点对点成功时文件内容不经过服务器。切换中转时，服务器只转发文件分片，不会写入 `data/taskboard.db`。
 
 当前版本不限制单个文件大小，但浏览器仍会受可用内存和磁盘空间影响。暂不支持断点续传、文件夹发送或离线发送。
 
-该功能不使用 STUN/TURN 中继。如果浏览器、系统防火墙或局域网策略阻止点对点连接，传输会失败，不会退回到服务器中转。
+该功能默认使用公共 STUN 辅助 WebRTC 发现可用连接路径。如果浏览器、系统防火墙或局域网策略阻止点对点连接，会退回到任务板服务器中转；如果 WebSocket 连接断开或对方离线，传输仍会失败。
+
+如需自定义 ICE 服务器，可在启动前设置 `RTC_ICE_SERVERS`，支持逗号分隔 URL 或 JSON：
+
+```powershell
+$env:RTC_ICE_SERVERS="stun:stun.l.google.com:19302"; npm start
+$env:RTC_ICE_SERVERS='[{"urls":"turn:turn.example.com:3478","username":"user","credential":"pass"}]'; npm start
+```
+
+如需完全离线局域网模式，可关闭 STUN/TURN：
+
+```powershell
+$env:RTC_ICE_SERVERS="none"; npm start
+```
 
 ## 打包 exe
 

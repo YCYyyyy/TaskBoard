@@ -33,7 +33,13 @@ const TASK_BACKGROUNDS = [
   { value: 'purple', label: '紫', color: '#ede9fe' }
 ];
 const FILE_CHUNK_SIZE = 64 * 1024;
+const RELAY_CHUNK_SIZE = 2 * 1024 * 1024;
 const DATA_CHANNEL_BUFFER_LIMIT = 1024 * 1024;
+const SOCKET_BUFFER_LIMIT = 8 * 1024 * 1024;
+const RTC_CONNECT_TIMEOUT_MS = 1000;
+const RTC_DISCONNECT_GRACE_MS = 1000;
+const RELAY_FALLBACK_DELAY_MS = 1000;
+const RELAY_ACK_TIMEOUT_MS = 30000;
 const TASK_NOTIFICATION_SUPPRESS_MS = 6000;
 const ALLOWED_TASK_HTML_TAGS = new Set([
   'a',
@@ -66,6 +72,7 @@ const TRANSFER_STATUSES = {
   waiting: '等待接收',
   connecting: '连接中',
   transferring: '传输中',
+  relaying: '中转传输中',
   finishing: '确认中',
   complete: '已完成',
   rejected: '已拒绝',
@@ -84,6 +91,8 @@ const state = {
   socket: null,
   peerId: null,
   peers: [],
+  rtcConfig: { iceServers: [] },
+  rtcConfigPromise: null,
   transferTargetPeerId: null,
   pendingIncomingTransferId: null,
   transfers: new Map(),
@@ -158,6 +167,7 @@ function init() {
   renderTransfers();
   fetchAddresses();
   fetchClientInfo();
+  fetchRtcConfig();
   fetchState();
   connectSocket();
 }
@@ -493,6 +503,25 @@ async function fetchClientInfo() {
   } catch {}
 }
 
+async function fetchRtcConfig() {
+  if (state.rtcConfigPromise) {
+    return state.rtcConfigPromise;
+  }
+
+  state.rtcConfigPromise = loadRtcConfig();
+  return state.rtcConfigPromise;
+}
+
+async function loadRtcConfig() {
+  try {
+    const data = await request('/api/rtc-config');
+    state.rtcConfig = normalizeRtcConfig(data);
+  } catch {
+    state.rtcConfig = { iceServers: [] };
+  }
+  return state.rtcConfig;
+}
+
 function renderAddresses(addresses, download) {
   els.addressList.replaceChildren();
   renderExeDownload(download);
@@ -578,6 +607,7 @@ async function copyText(text) {
 function connectSocket() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(`${protocol}//${location.host}`);
+  socket.binaryType = 'arraybuffer';
   state.socket = socket;
 
   socket.addEventListener('open', () => {
@@ -585,6 +615,11 @@ function connectSocket() {
   });
 
   socket.addEventListener('message', (event) => {
+    if (typeof event.data !== 'string') {
+      handleBinarySocketMessage(event.data);
+      return;
+    }
+
     try {
       const message = JSON.parse(event.data);
       handleSocketMessage(message);
@@ -652,6 +687,36 @@ function handleSocketMessage(message) {
     return;
   }
 
+  if (message.type === 'relay:start') {
+    handleRelayStart(payload);
+    return;
+  }
+
+  if (message.type === 'relay:chunk') {
+    handleRelayChunk(payload);
+    return;
+  }
+
+  if (message.type === 'relay:complete') {
+    handleRelayComplete(payload);
+    return;
+  }
+
+  if (message.type === 'relay:ack') {
+    handleRelayAck(payload);
+    return;
+  }
+
+  if (message.type === 'relay:received') {
+    handleRelayReceived(payload);
+    return;
+  }
+
+  if (message.type === 'relay:error') {
+    handleRelayError(payload);
+    return;
+  }
+
   if (message.type === 'transfer:cancel') {
     handleRemoteCancel(payload);
     return;
@@ -667,6 +732,31 @@ function handleSocketMessage(message) {
   }
 }
 
+function handleBinarySocketMessage(data) {
+  const buffer = data instanceof ArrayBuffer ? data : null;
+  if (!buffer || buffer.byteLength < 4) {
+    return;
+  }
+
+  const view = new DataView(buffer);
+  const headerLength = view.getUint32(0);
+  if (!headerLength || 4 + headerLength > buffer.byteLength) {
+    return;
+  }
+
+  try {
+    const headerBytes = new Uint8Array(buffer, 4, headerLength);
+    const message = JSON.parse(new TextDecoder().decode(headerBytes));
+    if (message.type !== 'relay:chunk') {
+      return;
+    }
+
+    handleRelayChunk(message.payload || {}, buffer.slice(4 + headerLength));
+  } catch {
+    showToast('中转分片解析失败');
+  }
+}
+
 function sendSocket(type, payload = {}) {
   if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
     showToast('连接未就绪');
@@ -674,6 +764,22 @@ function sendSocket(type, payload = {}) {
   }
 
   state.socket.send(JSON.stringify({ type, payload }));
+  return true;
+}
+
+function sendBinarySocket(type, payload, chunk) {
+  if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+    showToast('连接未就绪');
+    return false;
+  }
+
+  const header = new TextEncoder().encode(JSON.stringify({ type, payload }));
+  const frame = new ArrayBuffer(4 + header.byteLength + chunk.byteLength);
+  const view = new DataView(frame);
+  view.setUint32(0, header.byteLength);
+  new Uint8Array(frame, 4, header.byteLength).set(header);
+  new Uint8Array(frame, 4 + header.byteLength).set(new Uint8Array(chunk));
+  state.socket.send(frame);
   return true;
 }
 
@@ -999,12 +1105,18 @@ function handleTransferResponse(payload) {
 
   transfer.status = 'connecting';
   renderTransfers();
+  scheduleRelayFallback(transfer);
   createSenderConnection(transfer).catch((error) => {
-    markTransferFailed(transfer, error.message || '连接失败');
+    handlePeerConnectionFailure(transfer, error.message || '连接失败');
   });
 }
 
 async function createSenderConnection(transfer) {
+  await fetchRtcConfig();
+  if (transfer.usesRelay || isFinishedTransfer(transfer)) {
+    return;
+  }
+
   const pc = createPeerConnection(transfer);
   const channel = pc.createDataChannel('file', { ordered: true });
   transfer.channel = channel;
@@ -1012,6 +1124,10 @@ async function createSenderConnection(transfer) {
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
+  if (transfer.usesRelay || isFinishedTransfer(transfer)) {
+    return;
+  }
+
   sendSocket('rtc:offer', {
     transferId: transfer.id,
     toPeerId: transfer.peerId,
@@ -1021,12 +1137,13 @@ async function createSenderConnection(transfer) {
 
 async function handleRtcOffer(payload) {
   const transfer = getTransfer(payload.transferId);
-  if (!transfer || transfer.direction !== 'incoming') {
+  if (!transfer || transfer.direction !== 'incoming' || transfer.usesRelay) {
     return;
   }
 
   try {
     transfer.status = 'connecting';
+    await fetchRtcConfig();
     const pc = createPeerConnection(transfer);
     pc.ondatachannel = (event) => setupReceiverChannel(transfer, event.channel);
     await pc.setRemoteDescription(payload.description);
@@ -1040,13 +1157,13 @@ async function handleRtcOffer(payload) {
     });
     renderTransfers();
   } catch (error) {
-    markTransferFailed(transfer, error.message || '连接失败');
+    handlePeerConnectionFailure(transfer, error.message || '连接失败');
   }
 }
 
 async function handleRtcAnswer(payload) {
   const transfer = getTransfer(payload.transferId);
-  if (!transfer || !transfer.pc) {
+  if (!transfer || !transfer.pc || transfer.usesRelay) {
     return;
   }
 
@@ -1054,13 +1171,13 @@ async function handleRtcAnswer(payload) {
     await transfer.pc.setRemoteDescription(payload.description);
     await flushPendingIceCandidates(transfer);
   } catch (error) {
-    markTransferFailed(transfer, error.message || '连接失败');
+    handlePeerConnectionFailure(transfer, error.message || '连接失败');
   }
 }
 
 async function handleRtcIce(payload) {
   const transfer = getTransfer(payload.transferId);
-  if (!transfer || !payload.candidate) {
+  if (!transfer || transfer.usesRelay || !payload.candidate) {
     return;
   }
 
@@ -1072,13 +1189,18 @@ async function handleRtcIce(payload) {
   try {
     await transfer.pc.addIceCandidate(payload.candidate);
   } catch (error) {
-    markTransferFailed(transfer, error.message || '连接失败');
+    handlePeerConnectionFailure(transfer, error.message || '连接失败');
   }
 }
 
 function createPeerConnection(transfer) {
-  const pc = new RTCPeerConnection({ iceServers: [] });
+  const pc = new RTCPeerConnection(state.rtcConfig);
   transfer.pc = pc;
+  transfer.connectionTimer = window.setTimeout(() => {
+    if (!isFinishedTransfer(transfer) && pc.connectionState !== 'connected') {
+      handlePeerConnectionFailure(transfer, '点对点连接超时');
+    }
+  }, RTC_CONNECT_TIMEOUT_MS);
 
   pc.onicecandidate = (event) => {
     sendSocket('rtc:ice', {
@@ -1089,8 +1211,29 @@ function createPeerConnection(transfer) {
   };
 
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-      markTransferFailed(transfer, '点对点连接已断开');
+    if (pc.connectionState === 'connected') {
+      clearTransferConnectionTimers(transfer);
+      return;
+    }
+
+    if (pc.connectionState === 'failed') {
+      handlePeerConnectionFailure(transfer, '点对点连接已断开');
+      return;
+    }
+
+    if (pc.connectionState === 'disconnected' && !transfer.disconnectTimer) {
+      transfer.disconnectTimer = window.setTimeout(() => {
+        transfer.disconnectTimer = null;
+        if (!isFinishedTransfer(transfer) && pc.connectionState === 'disconnected') {
+          handlePeerConnectionFailure(transfer, '点对点连接已断开');
+        }
+      }, RTC_DISCONNECT_GRACE_MS);
+      return;
+    }
+
+    if (pc.connectionState !== 'disconnected' && transfer.disconnectTimer) {
+      window.clearTimeout(transfer.disconnectTimer);
+      transfer.disconnectTimer = null;
     }
   };
 
@@ -1101,13 +1244,13 @@ function setupSenderChannel(transfer, channel) {
   channel.binaryType = 'arraybuffer';
   channel.bufferedAmountLowThreshold = DATA_CHANNEL_BUFFER_LIMIT / 2;
   channel.onopen = () => sendFileChunks(transfer).catch((error) => {
-    markTransferFailed(transfer, error.message || '发送失败');
+    handlePeerConnectionFailure(transfer, error.message || '发送失败');
   });
   channel.onmessage = (event) => handleSenderChannelMessage(transfer, event.data);
-  channel.onerror = () => markTransferFailed(transfer, '发送通道异常');
+  channel.onerror = () => handlePeerConnectionFailure(transfer, '发送通道异常');
   channel.onclose = () => {
     if (!isFinishedTransfer(transfer)) {
-      markTransferFailed(transfer, '发送通道已关闭');
+      handlePeerConnectionFailure(transfer, '发送通道已关闭');
     }
   };
 }
@@ -1116,10 +1259,10 @@ function setupReceiverChannel(transfer, channel) {
   transfer.channel = channel;
   channel.binaryType = 'arraybuffer';
   channel.onmessage = (event) => handleReceiverChannelMessage(transfer, event.data);
-  channel.onerror = () => markTransferFailed(transfer, '接收通道异常');
+  channel.onerror = () => handlePeerConnectionFailure(transfer, '接收通道异常');
   channel.onclose = () => {
     if (!isFinishedTransfer(transfer)) {
-      markTransferFailed(transfer, '接收通道已关闭');
+      handlePeerConnectionFailure(transfer, '接收通道已关闭');
     }
   };
 }
@@ -1129,6 +1272,8 @@ async function sendFileChunks(transfer) {
     throw new Error('文件不可用');
   }
 
+  clearRelayFallbackTimer(transfer);
+  clearTransferConnectionTimers(transfer);
   transfer.status = 'transferring';
   renderTransfers();
 
@@ -1204,6 +1349,114 @@ function waitForChannelBuffer(channel) {
   });
 }
 
+async function startRelayTransfer(transfer) {
+  if (transfer.relayStarted || isFinishedTransfer(transfer)) {
+    return;
+  }
+  if (!transfer.file) {
+    throw new Error('文件不可用');
+  }
+
+  transfer.relayStarted = true;
+  transfer.usesRelay = true;
+  transfer.status = 'relaying';
+  transfer.error = '';
+  transfer.transferredBytes = 0;
+  transfer.progress = 0;
+  closeTransferConnection(transfer);
+  renderTransfers();
+
+  if (!sendSocket('relay:start', { transferId: transfer.id, toPeerId: transfer.peerId })) {
+    throw new Error('中转连接未就绪');
+  }
+
+  let offset = 0;
+  while (offset < transfer.file.size) {
+    if (transfer.status === 'canceled' || transfer.status === 'failed') {
+      return;
+    }
+
+    const chunk = await transfer.file.slice(offset, offset + RELAY_CHUNK_SIZE).arrayBuffer();
+    const nextOffset = offset + chunk.byteLength;
+    const ack = waitForRelayAck(transfer, nextOffset);
+    try {
+      await waitForSocketBuffer();
+      if (!sendBinarySocket('relay:chunk', {
+        transferId: transfer.id,
+        toPeerId: transfer.peerId,
+        offset,
+        bytes: chunk.byteLength
+      }, chunk)) {
+        throw new Error('中转发送失败');
+      }
+    } catch (error) {
+      clearRelayAckWaiter(transfer, error);
+      throw error;
+    }
+
+    offset = await ack;
+  }
+
+  transfer.status = 'finishing';
+  transfer.transferredBytes = transfer.file.size;
+  transfer.progress = 100;
+  renderTransfers();
+  await waitForSocketBuffer();
+  if (!sendSocket('relay:complete', { transferId: transfer.id, toPeerId: transfer.peerId })) {
+    throw new Error('中转完成消息发送失败');
+  }
+}
+
+function waitForSocketBuffer() {
+  if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+    return Promise.reject(new Error('中转连接已断开'));
+  }
+
+  if (state.socket.bufferedAmount <= SOCKET_BUFFER_LIMIT) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+        reject(new Error('中转连接已断开'));
+        return;
+      }
+      if (state.socket.bufferedAmount <= SOCKET_BUFFER_LIMIT) {
+        resolve();
+        return;
+      }
+      window.setTimeout(check, 25);
+    };
+    window.setTimeout(check, 25);
+  });
+}
+
+function waitForRelayAck(transfer, offset) {
+  clearRelayAckWaiter(transfer, new Error('中转确认被替换'));
+
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      transfer.relayAckWaiter = null;
+      reject(new Error('中转确认超时'));
+    }, RELAY_ACK_TIMEOUT_MS);
+    transfer.relayAckWaiter = { offset, resolve, reject, timer };
+  });
+}
+
+function clearRelayAckWaiter(transfer, error) {
+  if (!transfer.relayAckWaiter) {
+    return;
+  }
+
+  const waiter = transfer.relayAckWaiter;
+  transfer.relayAckWaiter = null;
+  window.clearTimeout(waiter.timer);
+  if (error) {
+    waiter.reject(error);
+  }
+}
+
 function handleReceiverChannelMessage(transfer, data) {
   if (typeof data === 'string') {
     try {
@@ -1228,13 +1481,143 @@ function handleReceiverChannelMessage(transfer, data) {
   appendIncomingChunk(transfer, chunk);
 }
 
+function handleRelayStart(payload) {
+  const transfer = getTransfer(payload.transferId);
+  if (!transfer || transfer.direction !== 'incoming' || isFinishedTransfer(transfer)) {
+    return;
+  }
+
+  closeTransferConnection(transfer);
+  transfer.usesRelay = true;
+  transfer.relayStarted = true;
+  transfer.status = 'relaying';
+  transfer.error = '';
+  transfer.progress = 0;
+  transfer.transferredBytes = 0;
+  transfer.chunks = [];
+  renderTransfers();
+}
+
+function handleRelayChunk(payload, binaryChunk = null) {
+  const transfer = getTransfer(payload.transferId);
+  if (!transfer || transfer.direction !== 'incoming' || isFinishedTransfer(transfer)) {
+    return;
+  }
+  if (!transfer.usesRelay) {
+    handleRelayStart(payload);
+  }
+
+  const offset = Number(payload.offset);
+  const expectedBytes = Number(payload.bytes);
+  if (!Number.isInteger(offset) || offset !== transfer.transferredBytes) {
+    failRelayReceiver(transfer, '中转分片顺序无效');
+    return;
+  }
+
+  let chunk;
+  if (binaryChunk instanceof ArrayBuffer) {
+    chunk = binaryChunk;
+  } else {
+    const encodedChunk = typeof payload.chunk === 'string' ? payload.chunk : '';
+    if (!encodedChunk) {
+      failRelayReceiver(transfer, '中转分片为空');
+      return;
+    }
+
+    try {
+      chunk = base64ToArrayBuffer(encodedChunk);
+    } catch {
+      failRelayReceiver(transfer, '中转分片解析失败');
+      return;
+    }
+  }
+
+  if ((Number.isInteger(expectedBytes) && chunk.byteLength !== expectedBytes)
+    || transfer.transferredBytes + chunk.byteLength > transfer.fileSize) {
+    failRelayReceiver(transfer, '中转分片大小无效');
+    return;
+  }
+
+  appendIncomingChunk(transfer, chunk);
+  sendSocket('relay:ack', {
+    transferId: transfer.id,
+    toPeerId: transfer.peerId,
+    offset: transfer.transferredBytes,
+    bytes: chunk.byteLength
+  });
+}
+
+function handleRelayComplete(payload) {
+  const transfer = getTransfer(payload.transferId);
+  if (!transfer || transfer.direction !== 'incoming' || isFinishedTransfer(transfer)) {
+    return;
+  }
+
+  transfer.usesRelay = true;
+  finishIncomingTransfer(transfer);
+}
+
+function handleRelayAck(payload) {
+  const transfer = getTransfer(payload.transferId);
+  if (!transfer || transfer.direction !== 'outgoing' || !transfer.usesRelay || isFinishedTransfer(transfer)) {
+    return;
+  }
+
+  const offset = Number(payload.offset);
+  const waiter = transfer.relayAckWaiter;
+  if (!Number.isInteger(offset) || offset < 0 || !waiter || offset < waiter.offset) {
+    return;
+  }
+
+  transfer.transferredBytes = Math.min(offset, transfer.fileSize);
+  transfer.progress = getProgress(transfer.transferredBytes, transfer.fileSize);
+  renderTransfers();
+  transfer.relayAckWaiter = null;
+  window.clearTimeout(waiter.timer);
+  waiter.resolve(transfer.transferredBytes);
+}
+
+function handleRelayReceived(payload) {
+  const transfer = getTransfer(payload.transferId);
+  if (!transfer || transfer.direction !== 'outgoing' || isFinishedTransfer(transfer)) {
+    return;
+  }
+
+  transfer.status = 'complete';
+  transfer.progress = 100;
+  transfer.error = '';
+  renderTransfers();
+  window.setTimeout(() => closeTransferConnection(transfer), 500);
+}
+
+function handleRelayError(payload) {
+  const transfer = getTransfer(payload.transferId);
+  if (!transfer) {
+    return;
+  }
+
+  const message = typeof payload.message === 'string' && payload.message.trim()
+    ? payload.message.trim()
+    : '中转传输失败';
+  markTransferFailed(transfer, message);
+}
+
+function failRelayReceiver(transfer, message) {
+  sendSocket('relay:error', {
+    transferId: transfer.id,
+    toPeerId: transfer.peerId,
+    message
+  });
+  markTransferFailed(transfer, message);
+}
+
 function appendIncomingChunk(transfer, chunk) {
   if (!(chunk instanceof ArrayBuffer)) {
     markTransferFailed(transfer, '文件分片无效');
     return;
   }
 
-  transfer.status = 'transferring';
+  transfer.status = transfer.usesRelay ? 'relaying' : 'transferring';
   transfer.chunks.push(chunk);
   transfer.transferredBytes += chunk.byteLength;
   transfer.progress = getProgress(transfer.transferredBytes, transfer.fileSize);
@@ -1243,7 +1626,7 @@ function appendIncomingChunk(transfer, chunk) {
 
 function finishIncomingTransfer(transfer) {
   if (transfer.transferredBytes !== transfer.fileSize) {
-    sendChannelMessage(transfer.channel, { type: 'file:error', message: '文件大小校验失败' });
+    sendTransferResult(transfer, { type: 'file:error', message: '文件大小校验失败' });
     markTransferFailed(transfer, '文件大小校验失败');
     return;
   }
@@ -1254,10 +1637,23 @@ function finishIncomingTransfer(transfer) {
   transfer.objectUrl = URL.createObjectURL(blob);
   transfer.status = 'complete';
   transfer.progress = 100;
-  sendChannelMessage(transfer.channel, { type: 'file:received' });
+  sendTransferResult(transfer, { type: 'file:received' });
   renderTransfers();
   showToast('文件接收完成');
   window.setTimeout(() => closeTransferConnection(transfer), 500);
+}
+
+function sendTransferResult(transfer, message) {
+  if (transfer.usesRelay) {
+    sendSocket(message.type === 'file:received' ? 'relay:received' : 'relay:error', {
+      transferId: transfer.id,
+      toPeerId: transfer.peerId,
+      message: message.message
+    });
+    return;
+  }
+
+  sendChannelMessage(transfer.channel, message);
 }
 
 function sendChannelMessage(channel, message) {
@@ -1346,7 +1742,7 @@ function appendTransferActions(actions, transfer) {
     actions.append(createSmallButton(transfer.isSaving ? '保存中' : '保存', () => saveReceivedFile(transfer), transfer.isSaving));
   }
 
-  if (['incoming-request', 'waiting', 'connecting', 'transferring', 'finishing'].includes(transfer.status)) {
+  if (['incoming-request', 'waiting', 'connecting', 'transferring', 'relaying', 'finishing'].includes(transfer.status)) {
     actions.append(createSmallButton(transfer.direction === 'incoming' && transfer.status === 'incoming-request' ? '拒绝' : '取消', () => {
       if (transfer.direction === 'incoming' && transfer.status === 'incoming-request') {
         state.pendingIncomingTransferId = transfer.id;
@@ -1392,7 +1788,7 @@ async function saveReceivedFile(transfer) {
       return;
     }
 
-    dismissSavedTransfer(transfer);
+    showToast('保存完成');
   } catch (error) {
     if (error?.name === 'AbortError') {
       showToast('已取消保存');
@@ -1481,6 +1877,54 @@ function failActiveTransfers(message) {
   }
 }
 
+function handlePeerConnectionFailure(transfer, message) {
+  if (!transfer || isFinishedTransfer(transfer)) {
+    return;
+  }
+
+  closeTransferConnection(transfer);
+  if (transfer.usesRelay) {
+    markTransferFailed(transfer, message);
+    return;
+  }
+
+  if (transfer.direction === 'outgoing' && transfer.file && !transfer.relayStarted) {
+    startRelayTransfer(transfer).catch((error) => {
+      markTransferFailed(transfer, error.message || message || '传输失败');
+    });
+    return;
+  }
+
+  if (transfer.direction === 'incoming') {
+    transfer.status = 'connecting';
+    transfer.error = '点对点连接失败，等待中转传输';
+    renderTransfers();
+    return;
+  }
+
+  markTransferFailed(transfer, message);
+}
+
+function scheduleRelayFallback(transfer) {
+  clearRelayFallbackTimer(transfer);
+  transfer.relayFallbackTimer = window.setTimeout(() => {
+    transfer.relayFallbackTimer = null;
+    if (!isFinishedTransfer(transfer)
+      && transfer.direction === 'outgoing'
+      && !transfer.usesRelay
+      && transfer.status === 'connecting') {
+      handlePeerConnectionFailure(transfer, '点对点连接超时');
+    }
+  }, RELAY_FALLBACK_DELAY_MS);
+}
+
+function clearRelayFallbackTimer(transfer) {
+  if (transfer.relayFallbackTimer) {
+    window.clearTimeout(transfer.relayFallbackTimer);
+    transfer.relayFallbackTimer = null;
+  }
+}
+
 function markTransferFailed(transfer, message) {
   if (isFinishedTransfer(transfer)) {
     return;
@@ -1496,13 +1940,39 @@ function markTransferFailed(transfer, message) {
 }
 
 function closeTransferConnection(transfer) {
+  clearTransferConnectionTimers(transfer);
+  clearRelayFallbackTimer(transfer);
+  clearRelayAckWaiter(transfer, new Error('传输已关闭'));
+
   try {
-    transfer.channel?.close();
+    if (transfer.channel) {
+      transfer.channel.onopen = null;
+      transfer.channel.onmessage = null;
+      transfer.channel.onerror = null;
+      transfer.channel.onclose = null;
+      transfer.channel.close();
+    }
   } catch {}
 
   try {
-    transfer.pc?.close();
+    if (transfer.pc) {
+      transfer.pc.onicecandidate = null;
+      transfer.pc.onconnectionstatechange = null;
+      transfer.pc.ondatachannel = null;
+      transfer.pc.close();
+    }
   } catch {}
+}
+
+function clearTransferConnectionTimers(transfer) {
+  if (transfer.connectionTimer) {
+    window.clearTimeout(transfer.connectionTimer);
+    transfer.connectionTimer = null;
+  }
+  if (transfer.disconnectTimer) {
+    window.clearTimeout(transfer.disconnectTimer);
+    transfer.disconnectTimer = null;
+  }
 }
 
 function isFinishedTransfer(transfer) {
@@ -1567,6 +2037,65 @@ function normalizeFileMetadata(file) {
     type: typeof file.type === 'string' ? file.type : '',
     lastModified: Number.isFinite(Number(file.lastModified)) ? Number(file.lastModified) : null
   };
+}
+
+function normalizeRtcConfig(config) {
+  if (!config || typeof config !== 'object') {
+    return { iceServers: [] };
+  }
+
+  const iceServers = Array.isArray(config.iceServers)
+    ? config.iceServers.map(normalizeRtcIceServer).filter(Boolean)
+    : [];
+  return { iceServers };
+}
+
+function normalizeRtcIceServer(server) {
+  if (!server || typeof server !== 'object') {
+    return null;
+  }
+
+  const urls = Array.isArray(server.urls)
+    ? server.urls.map((url) => String(url || '').trim()).filter(isRtcIceServerUrl)
+    : [String(server.urls || '').trim()].filter(isRtcIceServerUrl);
+
+  if (!urls.length) {
+    return null;
+  }
+
+  const normalized = { urls: urls.length === 1 ? urls[0] : urls };
+  if (typeof server.username === 'string' && server.username.trim()) {
+    normalized.username = server.username.trim();
+  }
+  if (typeof server.credential === 'string' && server.credential.trim()) {
+    normalized.credential = server.credential.trim();
+  }
+  if (typeof server.credentialType === 'string' && server.credentialType.trim()) {
+    normalized.credentialType = server.credentialType.trim();
+  }
+  return normalized;
+}
+
+function isRtcIceServerUrl(url) {
+  return /^(stun|turn|turns):/i.test(url);
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function base64ToArrayBuffer(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
 }
 
 function normalizePeerIdentity(identity) {
