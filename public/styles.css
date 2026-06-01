@@ -62,7 +62,9 @@ button,
 input,
 textarea,
 select {
-  font: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
   letter-spacing: 0;
 }
 
@@ -100,6 +102,10 @@ textarea {
   resize: vertical;
   padding: 12px;
   line-height: 1.58;
+}
+
+#taskDescriptionInput {
+  font-size: 14px;
 }
 
 label {
@@ -1450,6 +1456,77 @@ select:focus {
   box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.12);
 }
 
+.file-upload-area {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  min-height: 148px;
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(248, 250, 247, 0.92)),
+    var(--surface-soft);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.file-upload-area:hover,
+.file-upload-area.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}
+
+.file-upload-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius);
+  background: #fff;
+  color: var(--accent-strong);
+  font-size: 28px;
+  font-weight: 900;
+  box-shadow: var(--shadow-sm);
+}
+
+.file-upload-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.file-upload-copy strong,
+.file-upload-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-upload-copy strong {
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 850;
+}
+
+.file-upload-copy span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+#sendFilePeerName {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: bottom;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .transfer-request {
   display: grid;
   gap: 12px;
@@ -1740,6 +1817,18 @@ select:focus {
   .primary-action,
   .secondary-action {
     min-width: 0;
+  }
+
+  .file-upload-area {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    min-height: 172px;
+    text-align: center;
+  }
+
+  .file-upload-copy {
+    justify-items: center;
+    width: 100%;
   }
 }
 

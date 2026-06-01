@@ -36,9 +36,9 @@ const FILE_CHUNK_SIZE = 64 * 1024;
 const RELAY_CHUNK_SIZE = 2 * 1024 * 1024;
 const DATA_CHANNEL_BUFFER_LIMIT = 1024 * 1024;
 const SOCKET_BUFFER_LIMIT = 8 * 1024 * 1024;
-const RTC_CONNECT_TIMEOUT_MS = 1000;
-const RTC_DISCONNECT_GRACE_MS = 1000;
-const RELAY_FALLBACK_DELAY_MS = 1000;
+const RTC_CONNECT_TIMEOUT_MS = 300;
+const RTC_DISCONNECT_GRACE_MS = 300;
+const RELAY_FALLBACK_DELAY_MS = 300;
 const RELAY_ACK_TIMEOUT_MS = 30000;
 const TASK_NOTIFICATION_SUPPRESS_MS = 6000;
 const ALLOWED_TASK_HTML_TAGS = new Set([
@@ -94,6 +94,7 @@ const state = {
   rtcConfig: { iceServers: [] },
   rtcConfigPromise: null,
   transferTargetPeerId: null,
+  isSelectingFile: false,
   pendingIncomingTransferId: null,
   transfers: new Map(),
   hasLoadedState: false,
@@ -108,6 +109,10 @@ const els = {
   onlinePeers: document.querySelector('#onlinePeers'),
   peerCount: document.querySelector('#peerCount'),
   fileInput: document.querySelector('#fileInput'),
+  sendFileModal: document.querySelector('#sendFileModal'),
+  fileDropZone: document.querySelector('#fileDropZone'),
+  sendFilePeerName: document.querySelector('#sendFilePeerName'),
+  selectFileButton: document.querySelector('#selectFileButton'),
   transferPanel: document.querySelector('#transferPanel'),
   transferList: document.querySelector('#transferList'),
   notificationStack: document.querySelector('#notificationStack'),
@@ -126,7 +131,6 @@ const els = {
   openTaskCreateButton: document.querySelector('#openTaskCreateButton'),
   renameProjectForm: document.querySelector('#renameProjectForm'),
   renameProjectInput: document.querySelector('#renameProjectInput'),
-  renameProjectPinnedInput: document.querySelector('#renameProjectPinnedInput'),
   taskForm: document.querySelector('#taskForm'),
   taskDescriptionInput: document.querySelector('#taskDescriptionInput'),
   taskPinnedInput: document.querySelector('#taskPinnedInput'),
@@ -179,6 +183,18 @@ function setupEvents() {
   });
 
   els.fileInput.addEventListener('change', handleFileSelected);
+  els.selectFileButton.addEventListener('click', openSystemFilePicker);
+  els.fileDropZone.addEventListener('click', openSystemFilePicker);
+  els.fileDropZone.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openSystemFilePicker();
+    }
+  });
+  els.sendFileModal.addEventListener('dragenter', handleFileDragEnter);
+  els.sendFileModal.addEventListener('dragover', handleFileDragOver);
+  els.sendFileModal.addEventListener('dragleave', handleFileDragLeave);
+  els.sendFileModal.addEventListener('drop', handleFileDrop);
   els.acceptTransferButton.addEventListener('click', acceptIncomingTransfer);
   els.rejectTransferButton.addEventListener('click', () => rejectIncomingTransfer('已拒绝'));
 
@@ -201,12 +217,11 @@ function setupEvents() {
     event.preventDefault();
     const project = selectedProject();
     const name = els.renameProjectInput.value.trim();
-    const isPinned = els.renameProjectPinnedInput.checked;
     if (!project || !name) {
       return showToast('项目名不能为空');
     }
 
-    await request(`/api/projects/${project.id}`, { method: 'PATCH', body: { name, isPinned } });
+    await request(`/api/projects/${project.id}`, { method: 'PATCH', body: { name } });
     closeModal(els.projectRenameModal);
   });
 
@@ -926,44 +941,121 @@ function canTransferFiles() {
 }
 
 function chooseFileForPeer(peerId) {
-  if (!canTransferFiles()) {
-    showToast('当前浏览器不支持点对点文件传输');
-    return;
-  }
-
-  if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
-    showToast('连接未就绪');
-    return;
-  }
-
-  const peer = getPeer(peerId);
+  const peer = getAvailablePeerForTransfer(peerId);
   if (!peer) {
-    showToast('用户已离线');
     return;
   }
 
   state.transferTargetPeerId = peerId;
-  els.fileInput.value = '';
-  els.fileInput.click();
+  els.sendFilePeerName.textContent = peer.name;
+  els.fileDropZone.classList.remove('drag-over');
+  openModal(els.sendFileModal, els.fileDropZone);
 }
 
-function handleFileSelected() {
-  const peerId = state.transferTargetPeerId;
-  state.transferTargetPeerId = null;
+function getAvailablePeerForTransfer(peerId) {
+  if (!canTransferFiles()) {
+    showToast('当前浏览器不支持点对点文件传输');
+    return null;
+  }
 
-  const file = els.fileInput.files?.[0];
-  els.fileInput.value = '';
-
-  if (!file || !peerId) {
-    return;
+  if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+    showToast('连接未就绪');
+    return null;
   }
 
   const peer = getPeer(peerId);
   if (!peer) {
     showToast('用户已离线');
+    return null;
+  }
+
+  return peer;
+}
+
+function openSystemFilePicker() {
+  if (!getAvailablePeerForTransfer(state.transferTargetPeerId)) {
+    closeModal(els.sendFileModal);
     return;
   }
 
+  state.isSelectingFile = true;
+  window.addEventListener('focus', resetFilePickerStateAfterFocus, { once: true });
+  els.fileInput.value = '';
+  els.fileInput.click();
+}
+
+function resetFilePickerStateAfterFocus() {
+  window.setTimeout(() => {
+    state.isSelectingFile = false;
+  }, 0);
+}
+
+function handleFileSelected() {
+  state.isSelectingFile = false;
+
+  const file = els.fileInput.files?.[0];
+  els.fileInput.value = '';
+
+  if (!file) {
+    return;
+  }
+
+  sendSelectedFile(file);
+}
+
+function handleFileDragEnter(event) {
+  if (!hasDraggedFiles(event)) {
+    return;
+  }
+
+  event.preventDefault();
+  els.fileDropZone.classList.add('drag-over');
+}
+
+function handleFileDragOver(event) {
+  if (!hasDraggedFiles(event)) {
+    return;
+  }
+
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'copy';
+  els.fileDropZone.classList.add('drag-over');
+}
+
+function handleFileDragLeave(event) {
+  if (event.currentTarget.contains(event.relatedTarget)) {
+    return;
+  }
+
+  els.fileDropZone.classList.remove('drag-over');
+}
+
+function handleFileDrop(event) {
+  event.preventDefault();
+  els.fileDropZone.classList.remove('drag-over');
+
+  const file = event.dataTransfer?.files?.[0];
+  if (!file) {
+    showToast('请拖入一个文件');
+    return;
+  }
+
+  sendSelectedFile(file);
+}
+
+function hasDraggedFiles(event) {
+  return Array.from(event.dataTransfer?.types || []).includes('Files');
+}
+
+function sendSelectedFile(file) {
+  const peerId = state.transferTargetPeerId;
+  const peer = getAvailablePeerForTransfer(peerId);
+  if (!peer) {
+    closeModal(els.sendFileModal);
+    return;
+  }
+
+  closeModal(els.sendFileModal);
   startOutgoingTransfer(peer, file);
 }
 
@@ -2216,7 +2308,8 @@ function createProjectActions(project) {
   });
 
   menu.append(
-    projectMenuButton('编辑项目', () => openProjectRename(project)),
+    projectMenuButton('更改名称', () => openProjectRename(project)),
+    projectMenuButton(project.isPinned ? '取消置顶' : '置顶项目', () => patchProjectPinned(project, !project.isPinned)),
     project.isArchived
       ? projectMenuButton('恢复项目', () => patchProjectArchive(project, false))
       : projectMenuButton('归档项目', () => patchProjectArchive(project, true))
@@ -2252,8 +2345,12 @@ function openProjectRename(project) {
   state.selectedProjectId = project.id;
   render();
   els.renameProjectInput.value = project.name;
-  els.renameProjectPinnedInput.checked = Boolean(project.isPinned);
   openModal(els.projectRenameModal, els.renameProjectInput);
+}
+
+async function patchProjectPinned(project, isPinned) {
+  state.selectedProjectId = project.id;
+  await request(`/api/projects/${project.id}`, { method: 'PATCH', body: { isPinned } });
 }
 
 async function patchProjectArchive(project, isArchived) {
@@ -2532,6 +2629,11 @@ function closeModal(modal) {
   if (modal === els.taskModal) {
     state.editingTaskId = null;
     state.taskBackgroundColor = 'white';
+  }
+  if (modal === els.sendFileModal && !state.isSelectingFile) {
+    state.transferTargetPeerId = null;
+    els.fileDropZone.classList.remove('drag-over');
+    els.sendFilePeerName.textContent = '在线用户';
   }
 }
 

@@ -144,16 +144,12 @@
     <div class="modal hidden" id="projectRenameModal" role="dialog" aria-modal="true" aria-labelledby="projectRenameTitle">
       <form class="modal-panel" id="renameProjectForm">
         <div class="modal-head">
-          <h2 id="projectRenameTitle">编辑项目</h2>
+          <h2 id="projectRenameTitle">更改名称</h2>
           <button class="icon-button" type="button" data-close-modal title="关闭" aria-label="关闭">×</button>
         </div>
         <label>
           项目名称
           <input id="renameProjectInput" type="text" maxlength="60" placeholder="项目名称" />
-        </label>
-        <label class="checkbox-row">
-          <input id="renameProjectPinnedInput" type="checkbox" />
-          <span>置顶项目</span>
         </label>
         <div class="modal-actions">
           <button class="secondary-action" type="button" data-close-modal>取消</button>
@@ -185,6 +181,26 @@
           <button class="primary-action" type="submit" id="taskSubmitButton">新建</button>
         </div>
       </form>
+    </div>
+
+    <div class="modal hidden" id="sendFileModal" role="dialog" aria-modal="true" aria-labelledby="sendFileTitle">
+      <div class="modal-panel">
+        <div class="modal-head">
+          <h2 id="sendFileTitle">发送文件</h2>
+          <button class="icon-button" type="button" data-close-modal title="关闭" aria-label="关闭">×</button>
+        </div>
+        <div class="file-upload-area" id="fileDropZone" role="button" tabindex="0" aria-describedby="sendFileHint">
+          <div class="file-upload-icon">↥</div>
+          <div class="file-upload-copy">
+            <strong>拖放文件到这里</strong>
+            <span id="sendFileHint">发送给 <span id="sendFilePeerName">在线用户</span></span>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary-action" type="button" data-close-modal>取消</button>
+          <button class="primary-action" type="button" id="selectFileButton">从计算机选择</button>
+        </div>
+      </div>
     </div>
 
     <div class="modal hidden" id="incomingTransferModal" role="dialog" aria-modal="true" aria-labelledby="incomingTransferTitle">
