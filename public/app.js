@@ -32,9 +32,10 @@ const TASK_BACKGROUNDS = [
   { value: 'blue', label: '蓝', color: '#dbeafe' },
   { value: 'purple', label: '紫', color: '#ede9fe' }
 ];
-const FILE_CHUNK_SIZE = 64 * 1024;
+const DATA_CHANNEL_CHUNK_SIZE = 512 * 1024;
+const DATA_CHANNEL_MESSAGE_SIZE_MARGIN = 1024;
 const RELAY_CHUNK_SIZE = 2 * 1024 * 1024;
-const DATA_CHANNEL_BUFFER_LIMIT = 1024 * 1024;
+const DATA_CHANNEL_BUFFER_LIMIT = 4 * 1024 * 1024;
 const SOCKET_BUFFER_LIMIT = 8 * 1024 * 1024;
 const RTC_CONNECT_TIMEOUT_MS = 300;
 const RTC_DISCONNECT_GRACE_MS = 300;
@@ -97,6 +98,7 @@ const state = {
   isSelectingFile: false,
   pendingIncomingTransferId: null,
   transfers: new Map(),
+  transferRenderFrame: null,
   hasLoadedState: false,
   suppressedTaskNotifications: new Map(),
   identity: loadIdentity()
@@ -1369,6 +1371,7 @@ async function sendFileChunks(transfer) {
   transfer.status = 'transferring';
   renderTransfers();
 
+  const chunkSize = getDataChannelChunkSize(transfer);
   let offset = 0;
   while (offset < transfer.file.size) {
     if (transfer.status === 'canceled' || transfer.status === 'failed') {
@@ -1376,12 +1379,12 @@ async function sendFileChunks(transfer) {
     }
 
     await waitForChannelBuffer(transfer.channel);
-    const chunk = await transfer.file.slice(offset, offset + FILE_CHUNK_SIZE).arrayBuffer();
+    const chunk = await transfer.file.slice(offset, offset + chunkSize).arrayBuffer();
     transfer.channel.send(chunk);
     offset += chunk.byteLength;
     transfer.transferredBytes = offset;
     transfer.progress = getProgress(offset, transfer.file.size);
-    renderTransfers();
+    scheduleTransferRender();
   }
 
   await waitForChannelBuffer(transfer.channel);
@@ -1410,6 +1413,16 @@ function handleSenderChannelMessage(transfer, data) {
   } catch {
     markTransferFailed(transfer, '接收确认消息无效');
   }
+}
+
+function getDataChannelChunkSize(transfer) {
+  const maxMessageSize = Number(transfer.pc?.sctp?.maxMessageSize);
+  if (!Number.isFinite(maxMessageSize) || maxMessageSize <= 0) {
+    return DATA_CHANNEL_CHUNK_SIZE;
+  }
+
+  const safeMaxMessageSize = Math.max(1024, maxMessageSize - DATA_CHANNEL_MESSAGE_SIZE_MARGIN);
+  return Math.min(DATA_CHANNEL_CHUNK_SIZE, safeMaxMessageSize);
 }
 
 function waitForChannelBuffer(channel) {
@@ -1713,7 +1726,7 @@ function appendIncomingChunk(transfer, chunk) {
   transfer.chunks.push(chunk);
   transfer.transferredBytes += chunk.byteLength;
   transfer.progress = getProgress(transfer.transferredBytes, transfer.fileSize);
-  renderTransfers();
+  scheduleTransferRender();
 }
 
 function finishIncomingTransfer(transfer) {
@@ -1765,6 +1778,17 @@ async function flushPendingIceCandidates(transfer) {
   for (const candidate of candidates) {
     await transfer.pc.addIceCandidate(candidate);
   }
+}
+
+function scheduleTransferRender() {
+  if (state.transferRenderFrame !== null) {
+    return;
+  }
+
+  state.transferRenderFrame = window.requestAnimationFrame(() => {
+    state.transferRenderFrame = null;
+    renderTransfers();
+  });
 }
 
 function renderTransfers() {
