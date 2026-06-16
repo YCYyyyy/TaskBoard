@@ -1540,42 +1540,6 @@ select:focus {
   white-space: nowrap;
 }
 
-.transfer-request {
-  display: grid;
-  gap: 12px;
-}
-
-.transfer-request p {
-  margin: 0;
-  color: var(--ink-soft);
-}
-
-.transfer-request-file {
-  display: grid;
-  gap: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px;
-  background: var(--surface-soft);
-}
-
-.transfer-request-file span,
-.transfer-request-file strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.transfer-request-file span {
-  color: var(--ink-soft);
-  font-weight: 850;
-}
-
-.transfer-request-file strong {
-  color: var(--muted);
-  font-size: 12px;
-}
-
 .address-list {
   display: grid;
   gap: 8px;

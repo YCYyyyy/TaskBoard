@@ -69,7 +69,6 @@ const ALLOWED_NAME_HTML_TAGS = new Set(['b', 'br', 'code', 'em', 'i', 'mark', 's
 const REMOVED_HTML_TAGS = new Set(['base', 'embed', 'iframe', 'link', 'meta', 'object', 'script', 'style']);
 const ALLOWED_HTML_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
 const TRANSFER_STATUSES = {
-  'incoming-request': '等待确认',
   waiting: '等待接收',
   connecting: '连接中',
   transferring: '传输中',
@@ -96,7 +95,7 @@ const state = {
   rtcConfigPromise: null,
   transferTargetPeerId: null,
   isSelectingFile: false,
-  pendingIncomingTransferId: null,
+  fileTransferQueues: new Map(),
   transfers: new Map(),
   transferRenderFrame: null,
   hasLoadedState: false,
@@ -118,12 +117,6 @@ const els = {
   transferPanel: document.querySelector('#transferPanel'),
   transferList: document.querySelector('#transferList'),
   notificationStack: document.querySelector('#notificationStack'),
-  incomingTransferModal: document.querySelector('#incomingTransferModal'),
-  incomingTransferFrom: document.querySelector('#incomingTransferFrom'),
-  incomingTransferFileName: document.querySelector('#incomingTransferFileName'),
-  incomingTransferFileSize: document.querySelector('#incomingTransferFileSize'),
-  acceptTransferButton: document.querySelector('#acceptTransferButton'),
-  rejectTransferButton: document.querySelector('#rejectTransferButton'),
   projectForm: document.querySelector('#projectForm'),
   projectNameInput: document.querySelector('#projectNameInput'),
   activeProjects: document.querySelector('#activeProjects'),
@@ -197,8 +190,6 @@ function setupEvents() {
   els.sendFileModal.addEventListener('dragover', handleFileDragOver);
   els.sendFileModal.addEventListener('dragleave', handleFileDragLeave);
   els.sendFileModal.addEventListener('drop', handleFileDrop);
-  els.acceptTransferButton.addEventListener('click', acceptIncomingTransfer);
-  els.rejectTransferButton.addEventListener('click', () => rejectIncomingTransfer('已拒绝'));
 
   els.addressButton.addEventListener('click', () => {
     openModal(els.addressModal);
@@ -291,10 +282,6 @@ function setupEvents() {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       closeMenus();
-      if (!els.incomingTransferModal.classList.contains('hidden')) {
-        rejectIncomingTransfer('已拒绝');
-        return;
-      }
       document.querySelectorAll('.modal:not(.hidden)').forEach(closeModal);
     }
   });
@@ -995,14 +982,14 @@ function resetFilePickerStateAfterFocus() {
 function handleFileSelected() {
   state.isSelectingFile = false;
 
-  const file = els.fileInput.files?.[0];
+  const files = getSelectedFiles(els.fileInput.files);
   els.fileInput.value = '';
 
-  if (!file) {
+  if (!files.length) {
     return;
   }
 
-  sendSelectedFile(file);
+  sendSelectedFiles(files);
 }
 
 function handleFileDragEnter(event) {
@@ -1036,20 +1023,24 @@ function handleFileDrop(event) {
   event.preventDefault();
   els.fileDropZone.classList.remove('drag-over');
 
-  const file = event.dataTransfer?.files?.[0];
-  if (!file) {
-    showToast('请拖入一个文件');
+  const files = getSelectedFiles(event.dataTransfer?.files);
+  if (!files.length) {
+    showToast('请拖入文件');
     return;
   }
 
-  sendSelectedFile(file);
+  sendSelectedFiles(files);
 }
 
 function hasDraggedFiles(event) {
   return Array.from(event.dataTransfer?.types || []).includes('Files');
 }
 
-function sendSelectedFile(file) {
+function getSelectedFiles(fileList) {
+  return Array.from(fileList || []).filter((file) => file instanceof File);
+}
+
+function sendSelectedFiles(files) {
   const peerId = state.transferTargetPeerId;
   const peer = getAvailablePeerForTransfer(peerId);
   if (!peer) {
@@ -1058,11 +1049,84 @@ function sendSelectedFile(file) {
   }
 
   closeModal(els.sendFileModal);
-  startOutgoingTransfer(peer, file);
+  enqueueOutgoingFiles(peer, files);
 }
 
-function startOutgoingTransfer(peer, file) {
+function enqueueOutgoingFiles(peer, files) {
+  const queueFiles = files.filter(Boolean);
+  if (!queueFiles.length) {
+    return;
+  }
+
+  let queue = state.fileTransferQueues.get(peer.peerId);
+  if (!queue) {
+    queue = {
+      peerId: peer.peerId,
+      peerName: peer.name,
+      peerIcon: peer.icon,
+      peerColor: peer.color,
+      files: [],
+      activeTransferId: null
+    };
+    state.fileTransferQueues.set(peer.peerId, queue);
+  } else {
+    queue.peerName = peer.name;
+    queue.peerIcon = peer.icon;
+    queue.peerColor = peer.color;
+  }
+
+  queue.files.push(...queueFiles);
+  startNextQueuedFile(peer.peerId);
+}
+
+function startNextQueuedFile(peerId) {
+  const queue = state.fileTransferQueues.get(peerId);
+  if (!queue || queue.activeTransferId || !queue.files.length) {
+    return;
+  }
+
+  const peer = getPeer(peerId) || {
+    peerId,
+    name: queue.peerName,
+    icon: queue.peerIcon,
+    color: queue.peerColor
+  };
+  const file = queue.files.shift();
   const transferId = createTransferId();
+  queue.activeTransferId = transferId;
+  const transfer = startOutgoingTransfer(peer, file, transferId);
+  if (!transfer) {
+    queue.activeTransferId = null;
+    window.setTimeout(() => startNextQueuedFile(peerId), 0);
+    return;
+  }
+
+  if (isFinishedTransfer(transfer)) {
+    completeQueuedTransfer(transfer);
+    return;
+  }
+}
+
+function completeQueuedTransfer(transfer) {
+  if (!transfer || transfer.direction !== 'outgoing') {
+    return;
+  }
+
+  const queue = state.fileTransferQueues.get(transfer.peerId);
+  if (!queue || queue.activeTransferId !== transfer.id) {
+    return;
+  }
+
+  queue.activeTransferId = null;
+  if (!queue.files.length) {
+    state.fileTransferQueues.delete(transfer.peerId);
+    return;
+  }
+
+  window.setTimeout(() => startNextQueuedFile(transfer.peerId), 0);
+}
+
+function startOutgoingTransfer(peer, file, transferId = createTransferId()) {
   const transfer = {
     id: transferId,
     direction: 'outgoing',
@@ -1094,6 +1158,8 @@ function startOutgoingTransfer(peer, file) {
   if (!sent) {
     markTransferFailed(transfer, '发送请求失败');
   }
+
+  return transfer;
 }
 
 function handleIncomingTransfer(payload) {
@@ -1101,11 +1167,6 @@ function handleIncomingTransfer(payload) {
   const fromPeerId = typeof payload.fromPeerId === 'string' ? payload.fromPeerId : '';
   const file = normalizeFileMetadata(payload.file);
   if (!transferId || !fromPeerId || !file) {
-    return;
-  }
-
-  if (state.pendingIncomingTransferId) {
-    sendSocket('transfer:response', { transferId, toPeerId: fromPeerId, accepted: false });
     return;
   }
 
@@ -1121,7 +1182,7 @@ function handleIncomingTransfer(payload) {
     fileSize: file.size,
     fileType: file.type,
     lastModified: file.lastModified,
-    status: 'incoming-request',
+    status: 'connecting',
     progress: 0,
     transferredBytes: 0,
     chunks: [],
@@ -1130,57 +1191,13 @@ function handleIncomingTransfer(payload) {
   };
 
   state.transfers.set(transferId, transfer);
-  state.pendingIncomingTransferId = transferId;
-  renderIncomingTransferModal(transfer);
-  renderTransfers();
-  openModal(els.incomingTransferModal, els.acceptTransferButton);
-  notifyUser('收到文件请求', `${transfer.peerName} 想发送 ${transfer.fileName}`);
-}
-
-function renderIncomingTransferModal(transfer) {
-  els.incomingTransferFrom.textContent = transfer.peerName;
-  els.incomingTransferFileName.textContent = transfer.fileName;
-  els.incomingTransferFileSize.textContent = formatBytes(transfer.fileSize);
-}
-
-function acceptIncomingTransfer() {
-  const transfer = state.transfers.get(state.pendingIncomingTransferId);
-  if (!transfer || transfer.status !== 'incoming-request') {
-    closeIncomingTransferModal();
-    return;
-  }
-
-  transfer.status = 'connecting';
   sendSocket('transfer:response', {
     transferId: transfer.id,
     toPeerId: transfer.peerId,
     accepted: true
   });
-  closeIncomingTransferModal();
   renderTransfers();
-}
-
-function rejectIncomingTransfer(reason) {
-  const transfer = state.transfers.get(state.pendingIncomingTransferId);
-  if (!transfer) {
-    closeIncomingTransferModal();
-    return;
-  }
-
-  sendSocket('transfer:response', {
-    transferId: transfer.id,
-    toPeerId: transfer.peerId,
-    accepted: false
-  });
-  transfer.status = 'rejected';
-  transfer.error = reason || '已拒绝';
-  closeIncomingTransferModal();
-  renderTransfers();
-}
-
-function closeIncomingTransferModal() {
-  state.pendingIncomingTransferId = null;
-  closeModal(els.incomingTransferModal);
+  notifyUser('开始接收文件', `${transfer.peerName} 正在发送 ${transfer.fileName}`);
 }
 
 function handleTransferResponse(payload) {
@@ -1194,6 +1211,7 @@ function handleTransferResponse(payload) {
     transfer.error = '对方已拒绝';
     closeTransferConnection(transfer);
     renderTransfers();
+    completeQueuedTransfer(transfer);
     return;
   }
 
@@ -1406,6 +1424,7 @@ function handleSenderChannelMessage(transfer, data) {
       transfer.status = 'complete';
       transfer.progress = 100;
       renderTransfers();
+      completeQueuedTransfer(transfer);
       window.setTimeout(() => closeTransferConnection(transfer), 500);
     } else if (message.type === 'file:error') {
       markTransferFailed(transfer, message.message || '接收方校验失败');
@@ -1692,6 +1711,7 @@ function handleRelayReceived(payload) {
   transfer.progress = 100;
   transfer.error = '';
   renderTransfers();
+  completeQueuedTransfer(transfer);
   window.setTimeout(() => closeTransferConnection(transfer), 500);
 }
 
@@ -1858,15 +1878,8 @@ function appendTransferActions(actions, transfer) {
     actions.append(createSmallButton(transfer.isSaving ? '保存中' : '保存', () => saveReceivedFile(transfer), transfer.isSaving));
   }
 
-  if (['incoming-request', 'waiting', 'connecting', 'transferring', 'relaying', 'finishing'].includes(transfer.status)) {
-    actions.append(createSmallButton(transfer.direction === 'incoming' && transfer.status === 'incoming-request' ? '拒绝' : '取消', () => {
-      if (transfer.direction === 'incoming' && transfer.status === 'incoming-request') {
-        state.pendingIncomingTransferId = transfer.id;
-        rejectIncomingTransfer('已拒绝');
-      } else {
-        cancelTransfer(transfer, '已取消');
-      }
-    }));
+  if (['waiting', 'connecting', 'transferring', 'relaying', 'finishing'].includes(transfer.status)) {
+    actions.append(createSmallButton('取消', () => cancelTransfer(transfer, '已取消')));
   }
 }
 
@@ -1957,6 +1970,7 @@ function cancelTransfer(transfer, reason) {
   transfer.error = reason;
   closeTransferConnection(transfer);
   renderTransfers();
+  completeQueuedTransfer(transfer);
 }
 
 function handleRemoteCancel(payload) {
@@ -1968,10 +1982,8 @@ function handleRemoteCancel(payload) {
   transfer.status = 'canceled';
   transfer.error = typeof payload.reason === 'string' && payload.reason.trim() ? payload.reason.trim() : '对方已取消';
   closeTransferConnection(transfer);
-  if (state.pendingIncomingTransferId === transfer.id) {
-    closeIncomingTransferModal();
-  }
   renderTransfers();
+  completeQueuedTransfer(transfer);
 }
 
 function handleTransferError(payload) {
@@ -2049,10 +2061,8 @@ function markTransferFailed(transfer, message) {
   transfer.status = 'failed';
   transfer.error = message || '传输失败';
   closeTransferConnection(transfer);
-  if (state.pendingIncomingTransferId === transfer.id) {
-    closeIncomingTransferModal();
-  }
   renderTransfers();
+  completeQueuedTransfer(transfer);
 }
 
 function closeTransferConnection(transfer) {
@@ -2108,9 +2118,6 @@ function removeTransfer(transferId) {
   closeTransferConnection(transfer);
   if (transfer.objectUrl) {
     URL.revokeObjectURL(transfer.objectUrl);
-  }
-  if (state.pendingIncomingTransferId === transfer.id) {
-    closeIncomingTransferModal();
   }
   state.transfers.delete(transfer.id);
   renderTransfers();
