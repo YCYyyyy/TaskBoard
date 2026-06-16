@@ -69,7 +69,7 @@ const ALLOWED_NAME_HTML_TAGS = new Set(['b', 'br', 'code', 'em', 'i', 'mark', 's
 const REMOVED_HTML_TAGS = new Set(['base', 'embed', 'iframe', 'link', 'meta', 'object', 'script', 'style']);
 const ALLOWED_HTML_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
 const TRANSFER_STATUSES = {
-  waiting: '等待接收',
+  waiting: '准备传输',
   connecting: '连接中',
   transferring: '传输中',
   relaying: '中转传输中',
@@ -95,7 +95,6 @@ const state = {
   rtcConfigPromise: null,
   transferTargetPeerId: null,
   isSelectingFile: false,
-  fileTransferQueues: new Map(),
   transfers: new Map(),
   transferRenderFrame: null,
   hasLoadedState: false,
@@ -1049,84 +1048,13 @@ function sendSelectedFiles(files) {
   }
 
   closeModal(els.sendFileModal);
-  enqueueOutgoingFiles(peer, files);
+  for (const file of files) {
+    startOutgoingTransfer(peer, file);
+  }
 }
 
-function enqueueOutgoingFiles(peer, files) {
-  const queueFiles = files.filter(Boolean);
-  if (!queueFiles.length) {
-    return;
-  }
-
-  let queue = state.fileTransferQueues.get(peer.peerId);
-  if (!queue) {
-    queue = {
-      peerId: peer.peerId,
-      peerName: peer.name,
-      peerIcon: peer.icon,
-      peerColor: peer.color,
-      files: [],
-      activeTransferId: null
-    };
-    state.fileTransferQueues.set(peer.peerId, queue);
-  } else {
-    queue.peerName = peer.name;
-    queue.peerIcon = peer.icon;
-    queue.peerColor = peer.color;
-  }
-
-  queue.files.push(...queueFiles);
-  startNextQueuedFile(peer.peerId);
-}
-
-function startNextQueuedFile(peerId) {
-  const queue = state.fileTransferQueues.get(peerId);
-  if (!queue || queue.activeTransferId || !queue.files.length) {
-    return;
-  }
-
-  const peer = getPeer(peerId) || {
-    peerId,
-    name: queue.peerName,
-    icon: queue.peerIcon,
-    color: queue.peerColor
-  };
-  const file = queue.files.shift();
+function startOutgoingTransfer(peer, file) {
   const transferId = createTransferId();
-  queue.activeTransferId = transferId;
-  const transfer = startOutgoingTransfer(peer, file, transferId);
-  if (!transfer) {
-    queue.activeTransferId = null;
-    window.setTimeout(() => startNextQueuedFile(peerId), 0);
-    return;
-  }
-
-  if (isFinishedTransfer(transfer)) {
-    completeQueuedTransfer(transfer);
-    return;
-  }
-}
-
-function completeQueuedTransfer(transfer) {
-  if (!transfer || transfer.direction !== 'outgoing') {
-    return;
-  }
-
-  const queue = state.fileTransferQueues.get(transfer.peerId);
-  if (!queue || queue.activeTransferId !== transfer.id) {
-    return;
-  }
-
-  queue.activeTransferId = null;
-  if (!queue.files.length) {
-    state.fileTransferQueues.delete(transfer.peerId);
-    return;
-  }
-
-  window.setTimeout(() => startNextQueuedFile(transfer.peerId), 0);
-}
-
-function startOutgoingTransfer(peer, file, transferId = createTransferId()) {
   const transfer = {
     id: transferId,
     direction: 'outgoing',
@@ -1211,7 +1139,6 @@ function handleTransferResponse(payload) {
     transfer.error = '对方已拒绝';
     closeTransferConnection(transfer);
     renderTransfers();
-    completeQueuedTransfer(transfer);
     return;
   }
 
@@ -1424,7 +1351,6 @@ function handleSenderChannelMessage(transfer, data) {
       transfer.status = 'complete';
       transfer.progress = 100;
       renderTransfers();
-      completeQueuedTransfer(transfer);
       window.setTimeout(() => closeTransferConnection(transfer), 500);
     } else if (message.type === 'file:error') {
       markTransferFailed(transfer, message.message || '接收方校验失败');
@@ -1711,7 +1637,6 @@ function handleRelayReceived(payload) {
   transfer.progress = 100;
   transfer.error = '';
   renderTransfers();
-  completeQueuedTransfer(transfer);
   window.setTimeout(() => closeTransferConnection(transfer), 500);
 }
 
@@ -1970,7 +1895,6 @@ function cancelTransfer(transfer, reason) {
   transfer.error = reason;
   closeTransferConnection(transfer);
   renderTransfers();
-  completeQueuedTransfer(transfer);
 }
 
 function handleRemoteCancel(payload) {
@@ -1983,7 +1907,6 @@ function handleRemoteCancel(payload) {
   transfer.error = typeof payload.reason === 'string' && payload.reason.trim() ? payload.reason.trim() : '对方已取消';
   closeTransferConnection(transfer);
   renderTransfers();
-  completeQueuedTransfer(transfer);
 }
 
 function handleTransferError(payload) {
@@ -2062,7 +1985,6 @@ function markTransferFailed(transfer, message) {
   transfer.error = message || '传输失败';
   closeTransferConnection(transfer);
   renderTransfers();
-  completeQueuedTransfer(transfer);
 }
 
 function closeTransferConnection(transfer) {
