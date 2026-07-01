@@ -926,6 +926,32 @@ function cleanupExpiredTransfers() {
   }
 }
 
+function cleanupOrphanedImages() {
+  const uploadsDir = path.join(DATA_DIR, 'uploads');
+  if (!require('fs').existsSync(uploadsDir)) return;
+  const files = require('fs').readdirSync(uploadsDir);
+  const now = Date.now();
+  // 1 hour threshold for orphaned images
+  const ONE_HOUR = 60 * 60 * 1000;
+  for (const filename of files) {
+    if (filename.startsWith('.')) continue;
+    const filePath = path.join(uploadsDir, filename);
+    try {
+      const stats = require('fs').statSync(filePath);
+      if (now - stats.mtimeMs > ONE_HOUR) {
+        const url = `/uploads/${filename}`;
+        const countRow = db.prepare('SELECT count(*) as count FROM tasks WHERE description LIKE ?').get(`%${url}%`);
+        if (countRow.count === 0) {
+          require('fs').unlinkSync(filePath);
+          console.log(`[Cleanup] Deleted orphaned image: ${filename}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[Cleanup] Failed to check/delete orphaned image ${filename}:`, err);
+    }
+  }
+}
+
 app.get('/api/state', (req, res) => {
   res.json(readState());
 });
@@ -1238,6 +1264,28 @@ app.patch('/api/tasks/:id', (req, res) => {
   params.push(now(), id);
   db.prepare(`UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`).run(...params);
 
+  if (Object.prototype.hasOwnProperty.call(req.body, 'description')) {
+    const oldDescription = task.description || '';
+    const newDescription = req.body.description || '';
+    
+    const oldMatches = [...oldDescription.matchAll(/src="(\/uploads\/[^"]+)"/g)].map(m => m[1]);
+    const newMatches = new Set([...newDescription.matchAll(/src="(\/uploads\/[^"]+)"/g)].map(m => m[1]));
+    
+    for (const url of oldMatches) {
+      if (!newMatches.has(url)) {
+        const countRow = db.prepare('SELECT count(*) as count FROM tasks WHERE description LIKE ?').get(`%${url}%`);
+        if (countRow.count === 0) {
+          try {
+            const filename = require('path').basename(url);
+            require('fs').unlinkSync(require('path').join(DATA_DIR, 'uploads', filename));
+          } catch (err) {
+            console.error('Failed to delete unused image:', err);
+          }
+        }
+      }
+    }
+  }
+
   broadcastState();
   return res.json({ ok: true });
 });
@@ -1316,6 +1364,8 @@ wss.on('connection', (socket) => {
 });
 
 setInterval(cleanupExpiredTransfers, 60 * 1000).unref();
+setInterval(cleanupOrphanedImages, 60 * 60 * 1000).unref(); // every hour
+setTimeout(cleanupOrphanedImages, 5000).unref(); // run once shortly after startup
 
 listenWithPortFallback(PORT);
 
