@@ -51,6 +51,7 @@ const ALLOWED_TASK_HTML_TAGS = new Set([
   'div',
   'em',
   'i',
+  'img',
   'li',
   'mark',
   'ol',
@@ -226,16 +227,61 @@ function setupEvents() {
     state.taskBackgroundColor = 'white';
     els.taskModalTitle.textContent = '新建任务';
     els.taskSubmitButton.textContent = '新建';
-    els.taskDescriptionInput.value = '';
+    els.taskDescriptionInput.innerHTML = '';
     els.taskPinnedInput.checked = false;
     renderTaskBackgroundOptions();
     openModal(els.taskModal, els.taskDescriptionInput);
   });
 
+  els.taskDescriptionInput.addEventListener('paste', async (e) => {
+    const items = (e.clipboardData || window.clipboardData).items;
+    
+    for (const item of items) {
+      if (item.type.indexOf('image') === 0) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (!file) continue;
+        
+        const uploadId = 'upload-' + Date.now();
+        const placeholderImg = `<img id="${uploadId}" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><text x='10' y='50'>...</text></svg>" alt="uploading" />`;
+        
+        els.taskDescriptionInput.focus();
+        document.execCommand('insertHTML', false, placeholderImg);
+
+        try {
+          const response = await fetch('/api/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': file.type },
+            body: file
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error);
+          
+          const img = document.getElementById(uploadId);
+          if (img) {
+            img.src = result.url;
+            img.removeAttribute('id');
+          }
+        } catch (error) {
+          console.error('Image upload failed:', error);
+          const img = document.getElementById(uploadId);
+          if (img) {
+            img.outerHTML = '<span>[图片上传失败]</span>';
+          }
+        }
+        return;
+      }
+    }
+    
+    e.preventDefault();
+    const text = (e.originalEvent || e).clipboardData.getData('text/plain');
+    document.execCommand('insertText', false, text);
+  });
+
   els.taskForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const project = selectedProject();
-    const description = els.taskDescriptionInput.value.trim();
+    const description = els.taskDescriptionInput.innerHTML.trim();
     if (!project) {
       return showToast('请先选择项目');
     }
@@ -448,6 +494,8 @@ function sanitizeHtmlFragment(parent, allowedTags) {
 
 function sanitizeHtmlAttributes(element, tagName) {
   const href = element.getAttribute('href');
+  const src = element.getAttribute('src');
+  const alt = element.getAttribute('alt');
   const title = element.getAttribute('title');
 
   for (const attribute of Array.from(element.attributes)) {
@@ -462,6 +510,12 @@ function sanitizeHtmlAttributes(element, tagName) {
     element.setAttribute('href', href);
     element.setAttribute('target', '_blank');
     element.setAttribute('rel', 'noopener noreferrer');
+  }
+
+  if (tagName === 'img' && isSafeHtmlHref(src)) {
+    element.setAttribute('src', src);
+    if (alt) element.setAttribute('alt', alt);
+    element.setAttribute('style', 'max-width: 100%; max-height: 400px; border-radius: 8px;');
   }
 }
 
@@ -2388,7 +2442,14 @@ function createTaskCard(task, project) {
   if (!project.isArchived) {
     description.tabIndex = 0;
     description.title = '点击编辑';
-    description.addEventListener('click', () => openTaskEdit(task));
+    description.addEventListener('click', (event) => {
+      if (event.target.tagName === 'IMG') {
+        event.stopPropagation();
+        openImagePreview(event.target.src);
+      } else {
+        openTaskEdit(task);
+      }
+    });
     description.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
@@ -2499,7 +2560,7 @@ function openTaskEdit(task) {
   state.taskBackgroundColor = isTaskBackground(task.backgroundColor) ? task.backgroundColor : 'white';
   els.taskModalTitle.textContent = '编辑任务';
   els.taskSubmitButton.textContent = '保存';
-  els.taskDescriptionInput.value = task.description;
+  els.taskDescriptionInput.innerHTML = task.description;
   els.taskPinnedInput.checked = Boolean(task.isPinned);
   renderTaskBackgroundOptions();
   openModal(els.taskModal, els.taskDescriptionInput);
@@ -2716,4 +2777,26 @@ function showToast(message) {
   showToast.timer = window.setTimeout(() => {
     els.toast.classList.remove('show');
   }, 2200);
+}
+
+function openImagePreview(src) {
+  let modal = document.getElementById('imagePreviewModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'imagePreviewModal';
+    modal.className = 'modal hidden';
+    modal.style.padding = '0';
+    modal.style.margin = '0';
+    modal.innerHTML = `
+      <div class="modal-panel" style="max-width: none; width: 100vw; height: 100vh; margin: 0; padding: 0; background: transparent; border: none; border-radius: 0; box-shadow: none; display: flex; justify-content: center; align-items: center; cursor: zoom-out;">
+        <img id="imagePreviewImg" style="width: 85vw; height: 85vh; object-fit: contain; cursor: zoom-out;" />
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', () => {
+      closeModal(modal);
+    });
+  }
+  document.getElementById('imagePreviewImg').src = src;
+  openModal(modal);
 }

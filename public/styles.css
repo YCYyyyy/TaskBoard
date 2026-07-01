@@ -81,7 +81,8 @@ button:disabled {
 
 input,
 textarea,
-select {
+select,
+[contenteditable="true"] {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -97,7 +98,8 @@ select {
   padding: 0 12px;
 }
 
-textarea {
+textarea,
+[contenteditable="true"] {
   min-height: 142px;
   resize: vertical;
   padding: 12px;
@@ -106,6 +108,26 @@ textarea {
 
 #taskDescriptionInput {
   font-size: 14px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+#taskDescriptionInput img {
+  display: block;
+  max-width: 90%;
+  max-height: 240px;
+  border-radius: 6px;
+  resize: both;
+  overflow: hidden;
+  margin: 4px 0;
+  object-fit: contain;
+}
+
+[contenteditable="true"]:empty:before {
+  content: attr(placeholder);
+  color: var(--muted-strong, #888);
+  pointer-events: none;
+  cursor: text;
 }
 
 label {
@@ -1175,6 +1197,16 @@ select:focus {
 
 .task-description-text code {
   padding: 1px 5px;
+}
+
+.task-description-text img {
+  display: block;
+  max-width: 90%;
+  max-height: 400px;
+  border-radius: 8px;
+  resize: both;
+  overflow: hidden;
+  cursor: zoom-in;
 }
 
 .task-description-text pre {

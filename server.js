@@ -179,6 +179,7 @@ const SEA_ASSET_KEYS = IS_SEA ? new Set(sea.getAssetKeys()) : new Set();
 
 app.use(express.json({ limit: '2mb' }));
 app.use(IS_SEA ? serveSeaStatic : express.static(path.join(__dirname, 'public')));
+app.use('/uploads', express.static(path.join(DATA_DIR, 'uploads')));
 
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
@@ -1097,6 +1098,23 @@ app.post('/api/tasks', (req, res) => {
   return res.status(201).json({ id: result.lastInsertRowid });
 });
 
+app.post('/api/upload', express.raw({ type: 'image/*', limit: '10mb' }), (req, res) => {
+  if (!req.body || !Buffer.isBuffer(req.body)) {
+    return badRequest(res, 'No image data');
+  }
+  const ext = req.get('Content-Type') === 'image/jpeg' ? '.jpg' : req.get('Content-Type') === 'image/webp' ? '.webp' : '.png';
+  const filename = crypto.randomBytes(16).toString('hex') + ext;
+  const uploadsDir = path.join(DATA_DIR, 'uploads');
+  try {
+    mkdirSync(uploadsDir, { recursive: true });
+    require('fs').writeFileSync(path.join(uploadsDir, filename), req.body);
+    res.json({ url: '/uploads/' + filename });
+  } catch (err) {
+    console.error('Failed to save uploaded image:', err);
+    res.status(500).json({ error: 'Failed to save image' });
+  }
+});
+
 app.patch('/api/identity-tasks', (req, res) => {
   const assignee = normalizeAssignee(req.body, { requireId: true });
   if (!assignee) {
@@ -1245,6 +1263,24 @@ app.delete('/api/tasks/:id', (req, res) => {
   }
 
   db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+
+  // Clean up unused images
+  if (task.description) {
+    const matches = [...task.description.matchAll(/src="(\/uploads\/[^"]+)"/g)];
+    for (const match of matches) {
+      const url = match[1];
+      const countRow = db.prepare('SELECT count(*) as count FROM tasks WHERE description LIKE ?').get(`%${url}%`);
+      if (countRow.count === 0) {
+        try {
+          const filename = path.basename(url);
+          require('fs').unlinkSync(path.join(DATA_DIR, 'uploads', filename));
+        } catch (err) {
+          console.error('Failed to delete unused image:', err);
+        }
+      }
+    }
+  }
+
   broadcastState();
   return res.json({ ok: true });
 });
